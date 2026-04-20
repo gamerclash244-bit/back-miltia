@@ -2,9 +2,7 @@ const express = require('express');
 const app = express();
 const http = require('http').createServer(app);
 const mongoose = require('mongoose');
-const io = require('socket.io')(http, {
-  cors: { origin: "*" } 
-});
+const io = require('socket.io')(http, { cors: { origin: "*" } });
 
 // CONNECT TO DATABASE
 const mongoURI = process.env.MONGO_URI; 
@@ -12,35 +10,59 @@ if (mongoURI) {
   mongoose.connect(mongoURI)
     .then(() => console.log('MongoDB Connected successfully!'))
     .catch(err => console.log('MongoDB Connection Error:', err));
-} else {
-  console.log("WARNING: No MONGO_URI found. Leaderboard will not save.");
 }
 
-// DEFINE THE SCOREBOARD RULES (1 Name = 1 Record)
+// SCOREBOARD & AUTHENTICATION RULES
 const PlayerSchema = new mongoose.Schema({
-  name: { type: String, unique: true }, // Ensures unique names
+  name: { type: String, unique: true }, 
+  pin: { type: String }, // NEW: Secret PIN to lock the name
   totalKills: { type: Number, default: 0 },
-  bestStreak: { type: Number, default: 0 } // This is "One Life Kills"
+  bestStreak: { type: Number, default: 0 } 
 });
 const PlayerDB = mongoose.model('Player', PlayerSchema);
 
 const players = {};
 
 io.on('connection', async (socket) => {
-  console.log('Fighter connected:', socket.id);
+  console.log('Connection attempt:', socket.id);
   
-  // Instantly send the current leaderboard to the new player
+  // Send the leaderboard as soon as they connect
   try {
     const topPlayers = await PlayerDB.find().sort({ bestStreak: -1 }).limit(10);
     socket.emit('leaderboardUpdate', topPlayers);
   } catch (err) {}
 
-  players[socket.id] = { x: 100, y: 100, aimAngle: 0, color: '#e74c3c', name: 'Unknown', health: 100 };
-  socket.emit('currentPlayers', players);
-  socket.broadcast.emit('newPlayer', { id: socket.id, player: players[socket.id] });
+  // NEW: LOGIN AND REGISTER SYSTEM
+  socket.on('login', async (data, callback) => {
+    if (!data.name || !data.pin) return callback({ success: false, message: "Name and PIN required." });
+    
+    try {
+      let p = await PlayerDB.findOne({ name: data.name });
+      if (p) {
+        // Name exists, check PIN
+        if (p.pin === data.pin) {
+          callback({ success: true, currentPlayers: players });
+        } else {
+          callback({ success: false, message: "Name taken. Incorrect PIN." });
+        }
+      } else {
+        // Name is new, register it
+        p = new PlayerDB({ name: data.name, pin: data.pin });
+        await p.save();
+        callback({ success: true, currentPlayers: players });
+      }
+    } catch (err) {
+      callback({ success: false, message: "Database Error." });
+    }
+  });
 
   socket.on('playerMovement', (data) => {
-    if(players[socket.id]) {
+    if (!players[socket.id]) {
+      // First time moving, tell everyone they joined
+      players[socket.id] = data;
+      socket.broadcast.emit('newPlayer', { id: socket.id, player: players[socket.id] });
+    } else {
+      // Just moving
       players[socket.id] = data;
       socket.broadcast.emit('playerMoved', { id: socket.id, player: players[socket.id] });
     }
@@ -50,30 +72,18 @@ io.on('connection', async (socket) => {
     socket.broadcast.emit('networkBullet', bulletData);
   });
 
-  // WHEN A PLAYER DIES, UPDATE THE DATABASE
   socket.on('updateScore', async (data) => {
-    if (!data.name || data.kills === undefined || data.kills === 0) return; 
-    
+    if (!data.name || !data.kills) return; 
     try {
       let p = await PlayerDB.findOne({ name: data.name });
-      if (!p) {
-        // First time this name got a kill
-        p = new PlayerDB({ name: data.name, totalKills: data.kills, bestStreak: data.kills });
-      } else {
-        // Returning player, update their stats
+      if (p) {
         p.totalKills += data.kills;
-        if (data.kills > p.bestStreak) {
-          p.bestStreak = data.kills; // Update highest "One Life Kills"
-        }
+        if (data.kills > p.bestStreak) p.bestStreak = data.kills; 
+        await p.save();
+        const topPlayers = await PlayerDB.find().sort({ bestStreak: -1 }).limit(10);
+        io.emit('leaderboardUpdate', topPlayers);
       }
-      await p.save();
-      
-      // Broadcast the newly sorted leaderboard to everyone
-      const topPlayers = await PlayerDB.find().sort({ bestStreak: -1 }).limit(10);
-      io.emit('leaderboardUpdate', topPlayers);
-    } catch (err) {
-      console.log("Database update failed:", err);
-    }
+    } catch (err) {}
   });
 
   socket.on('disconnect', () => {
