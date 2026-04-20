@@ -10,12 +10,14 @@ if (mongoURI) {
   mongoose.connect(mongoURI)
     .then(() => console.log('MongoDB Connected successfully!'))
     .catch(err => console.log('MongoDB Connection Error:', err));
+} else {
+  console.log("WARNING: No MONGO_URI found.");
 }
 
 // SCOREBOARD & AUTHENTICATION RULES
 const PlayerSchema = new mongoose.Schema({
   name: { type: String, unique: true }, 
-  pin: { type: String }, // NEW: Secret PIN to lock the name
+  pin: { type: String }, // Secure PIN
   totalKills: { type: Number, default: 0 },
   bestStreak: { type: Number, default: 0 } 
 });
@@ -26,43 +28,41 @@ const players = {};
 io.on('connection', async (socket) => {
   console.log('Connection attempt:', socket.id);
   
-  // Send the leaderboard as soon as they connect
+  // Instantly send the leaderboard
   try {
     const topPlayers = await PlayerDB.find().sort({ bestStreak: -1 }).limit(10);
     socket.emit('leaderboardUpdate', topPlayers);
   } catch (err) {}
 
-  // NEW: LOGIN AND REGISTER SYSTEM
+  // ACCOUNT LOGIN & REGISTRATION
   socket.on('login', async (data, callback) => {
-    if (!data.name || !data.pin) return callback({ success: false, message: "Name and PIN required." });
+    if (!data.name || !data.pin) return callback({ success: false, message: "Callsign and PIN required." });
     
     try {
       let p = await PlayerDB.findOne({ name: data.name });
       if (p) {
-        // Name exists, check PIN
+        // Account exists! Verify PIN:
         if (p.pin === data.pin) {
           callback({ success: true, currentPlayers: players });
         } else {
-          callback({ success: false, message: "Name taken. Incorrect PIN." });
+          callback({ success: false, message: "Callsign taken. Incorrect PIN." });
         }
       } else {
-        // Name is new, register it
+        // Account is new! Register it:
         p = new PlayerDB({ name: data.name, pin: data.pin });
         await p.save();
         callback({ success: true, currentPlayers: players });
       }
     } catch (err) {
-      callback({ success: false, message: "Database Error." });
+      callback({ success: false, message: "Database Error. Check Render Logs." });
     }
   });
 
   socket.on('playerMovement', (data) => {
     if (!players[socket.id]) {
-      // First time moving, tell everyone they joined
       players[socket.id] = data;
       socket.broadcast.emit('newPlayer', { id: socket.id, player: players[socket.id] });
     } else {
-      // Just moving
       players[socket.id] = data;
       socket.broadcast.emit('playerMoved', { id: socket.id, player: players[socket.id] });
     }
