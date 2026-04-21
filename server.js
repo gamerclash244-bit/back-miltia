@@ -93,20 +93,34 @@ class ServerNPC {
             }
         });
 
-        // 💥 FASTER SHOOTING LOGIC 💥
+        // 💥 FASTER SHOOTING & BOTS KILLING BOTS 💥
         if (this.target && this.health > 0) {
             let targetX = this.target.x + 20; let targetY = this.target.y + 20;
             let desiredAngle = Math.atan2(targetY - (this.y + 20), targetX - (this.x + 20));
             this.aimAngle += (desiredAngle - this.aimAngle) * 0.2; 
 
-            // Much faster trigger finger (down from 500ms delay)
-            if (now - this.lastShotTime > 300 + Math.random() * 200) {
+            // Fast trigger finger (every ~200ms-400ms)
+            if (now - this.lastShotTime > 200 + Math.random() * 200) {
                 this.lastShotTime = now;
+                
                 io.to('GLOBAL_PUBLIC').emit('networkBullet', {
                     x: this.x + 20, y: this.y + 20,
                     vx: Math.cos(this.aimAngle) * 14, vy: Math.sin(this.aimAngle) * 14,
                     radius: 4, color: '#ffffff', ownerId: this.id 
                 });
+
+                // Server automatically calculates if a Bot hit another Bot
+                if (this.target.id && this.target.id.startsWith('npc_') && Math.random() > 0.7) {
+                    this.target.health -= 15;
+                    if (this.target.health <= 0) {
+                        io.to('GLOBAL_PUBLIC').emit('botDied', { botId: this.target.id, botName: this.target.name, killerId: this.id, killerName: this.name, x: this.target.x, y: this.target.y });
+                        setTimeout(() => {
+                            this.target.health = 100;
+                            this.target.x = Math.random() * 8000 + 1000;
+                            this.target.y = Math.random() * 500 + 200;
+                        }, 3000);
+                    }
+                }
             }
         }
     }
@@ -219,7 +233,7 @@ io.on('connection', (socket) => {
         });
     });
 
-    // SERVER-AUTHORITATIVE BOT DAMAGE
+    // SERVER-AUTHORITATIVE BOT DAMAGE (When Player hits Bot)
     socket.on('damageBot', (data) => {
         let p = players[socket.id];
         if (!p || p.room !== 'GLOBAL_PUBLIC') return;
@@ -228,7 +242,7 @@ io.on('connection', (socket) => {
         if (bot && bot.health > 0) {
             bot.health -= data.damage;
             if (bot.health <= 0) {
-                io.to('GLOBAL_PUBLIC').emit('botDied', { botId: bot.id, botName: bot.name, killerId: socket.id, killerName: p.name });
+                io.to('GLOBAL_PUBLIC').emit('botDied', { botId: bot.id, botName: bot.name, killerId: socket.id, killerName: p.name, x: bot.x, y: bot.y });
                 
                 setTimeout(() => {
                     bot.health = 100;
