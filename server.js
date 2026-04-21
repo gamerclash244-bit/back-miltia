@@ -8,28 +8,27 @@ const { MongoClient } = require('mongodb');
 
 const PORT = process.env.PORT || 3000;
 
-// ── MONGODB SETUP ──
-// Replace the string below with your actual MongoDB connection URI!
-// Example: "mongodb+srv://<username>:<password>@cluster0.mongodb.net/?retryWrites=true&w=majority"
-const uri = process.env.MONGODB_URI || "mongodb+srv://gamerclash244_db_user:YJGhqcHaRmOMoF9P@cluster0.5o0s4pv.mongodb.net/?appName=Cluster0";
+// ── MONGODB SECURE UPLINK ──
+// Connected directly to your Cluster0
+const uri = "mongodb+srv://gamerclash244_db_user:YJGhqcHaRmOMoF9P@cluster0.5o0s4pv.mongodb.net/?appName=Cluster0";
 const client = new MongoClient(uri);
 let usersCollection;
 
 async function connectDB() {
     try {
         await client.connect();
-        console.log("Connected to MongoDB Secure Uplink!");
-        const database = client.db('baylerbayOps'); // Name of your database
-        usersCollection = database.collection('users'); // Name of your collection
+        console.log("✅ Connected to MongoDB Secure Uplink!");
+        const database = client.db('baylerbayOps'); 
+        usersCollection = database.collection('users'); 
         
-        // Creates an index so we can search callsigns quickly (case-insensitive)
+        // Ensures callsigns are unique (ignoring capitals/lowercase)
         await usersCollection.createIndex({ callsignLower: 1 }, { unique: true });
     } catch (err) {
-        console.error("MongoDB connection error:", err);
+        console.error("❌ MongoDB connection error:", err);
     }
 }
 connectDB();
-// ───────────────────
+// ───────────────────────────
 
 let players = {};
 let leaderboards = {}; 
@@ -49,7 +48,7 @@ function cleanupRoom(roomName) {
 
 io.on('connection', (socket) => {
     
-    // ── DATABASE AUTHENTICATION LOGIC (MONGODB) ──
+    // ── DATABASE AUTHENTICATION LOGIC ──
     socket.on('login', async (data, callback) => {
         const { name, pin } = data;
 
@@ -60,24 +59,23 @@ io.on('connection', (socket) => {
         const callsignLower = name.toLowerCase();
 
         try {
-            // Wait for the collection to load just in case the server just woke up
             if (!usersCollection) {
                 return callback({ success: false, message: "Database booting up, try again in 5 seconds." });
             }
 
-            // 1. Look for the user in MongoDB
+            // Search the DB for this player
             const user = await usersCollection.findOne({ callsignLower: callsignLower });
 
             if (user) {
-                // 2. User exists: Verify the PIN
+                // Player found: Check if the PIN matches!
                 if (user.pin === pin) {
-                    socket.playerName = user.callsign; // Use their properly capitalized saved name
+                    socket.playerName = user.callsign; 
                     callback({ success: true });
                 } else {
                     callback({ success: false, message: "ACCESS DENIED: Incorrect PIN." });
                 }
             } else {
-                // 3. New User: Register them in MongoDB
+                // New Player: Save them permanently to the DB!
                 await usersCollection.insertOne({
                     callsign: name,
                     callsignLower: callsignLower,
@@ -94,12 +92,12 @@ io.on('connection', (socket) => {
     });
     // ─────────────────────────────────────────────
 
+    // JOINING A MATCH
     socket.on('joinGame', (data, callback) => {
         let roomName = data.room || "GLOBAL_PUBLIC"; 
         let nameTaken = false;
         let existingId = null;
 
-        // Ensure no duplicate active connections
         for (let id in players) {
             if (id !== socket.id && players[id].room === roomName && players[id].name.toLowerCase() === socket.playerName.toLowerCase()) {
                 nameTaken = true; existingId = id;
@@ -138,6 +136,12 @@ io.on('connection', (socket) => {
 
         if (!leaderboards[roomName]) leaderboards[roomName] = [];
 
+        // Instantly register the player on the scoreboard with 0 kills the moment they join
+        let foundLB = leaderboards[roomName].find(lb => lb.name === socket.playerName);
+        if (!foundLB) {
+            leaderboards[roomName].push({ name: socket.playerName, bestStreak: 0, totalKills: 0 });
+        }
+
         let playersInRoom = {};
         for (let id in players) {
             if (players[id].room === roomName) playersInRoom[id] = players[id];
@@ -171,9 +175,7 @@ io.on('connection', (socket) => {
         if (found) {
             if (data.kills > found.bestStreak) found.bestStreak = data.kills;
             found.totalKills += data.kills;
-        } else {
-            roomLB.push({ name: data.name, bestStreak: data.kills, totalKills: data.kills });
-        }
+        } 
         
         roomLB.sort((a, b) => b.totalKills - a.totalKills);
         io.to(p.room).emit('leaderboardUpdate', roomLB);
