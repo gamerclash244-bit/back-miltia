@@ -109,3 +109,13 @@ io.on('connection', async (socket) => {
 
 const PORT = process.env.PORT || 3000;
 http.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+// Add this inside your Render server.js file
+let serverBots = [];
+// (Initialize your serverBots array here with the data from npc.js)
+
+setInterval(() => {
+    // 1. Loop through serverBots and update their X/Y coordinates
+    // 2. Broadcast the bot data to all connected clients
+    io.emit('botsSync', serverBots);
+}, 50); // 50ms = 20 ticks per second
