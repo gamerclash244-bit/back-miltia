@@ -4,51 +4,43 @@ const http = require('http').createServer(app);
 const mongoose = require('mongoose');
 const io = require('socket.io')(http, { cors: { origin: "*" } });
 
-// CONNECT TO DATABASE
 const mongoURI = process.env.MONGO_URI; 
 if (mongoURI) {
   mongoose.connect(mongoURI)
     .then(() => console.log('MongoDB Connected successfully!'))
     .catch(err => console.log('MongoDB Connection Error:', err));
-} else {
-  console.log("WARNING: No MONGO_URI found.");
 }
 
-// SCOREBOARD & AUTHENTICATION RULES
 const PlayerSchema = new mongoose.Schema({
   name: { type: String, unique: true }, 
-  pin: { type: String }, // Secure PIN
+  pin: { type: String }, 
   totalKills: { type: Number, default: 0 },
   bestStreak: { type: Number, default: 0 } 
 });
 const PlayerDB = mongoose.model('Player', PlayerSchema);
 
 const players = {};
+const SYNC_RADIUS = 2500; // Maximum pixel distance to send network updates
 
 io.on('connection', async (socket) => {
   console.log('Connection attempt:', socket.id);
   
-  // Instantly send the leaderboard
   try {
     const topPlayers = await PlayerDB.find().sort({ bestStreak: -1 }).limit(10);
     socket.emit('leaderboardUpdate', topPlayers);
   } catch (err) {}
 
-  // ACCOUNT LOGIN & REGISTRATION
   socket.on('login', async (data, callback) => {
     if (!data.name || !data.pin) return callback({ success: false, message: "Callsign and PIN required." });
-    
     try {
       let p = await PlayerDB.findOne({ name: data.name });
       if (p) {
-        // Account exists! Verify PIN:
         if (p.pin === data.pin) {
           callback({ success: true, currentPlayers: players });
         } else {
           callback({ success: false, message: "Callsign taken. Incorrect PIN." });
         }
       } else {
-        // Account is new! Register it:
         p = new PlayerDB({ name: data.name, pin: data.pin });
         await p.save();
         callback({ success: true, currentPlayers: players });
@@ -59,17 +51,40 @@ io.on('connection', async (socket) => {
   });
 
   socket.on('playerMovement', (data) => {
-    if (!players[socket.id]) {
-      players[socket.id] = data;
-      socket.broadcast.emit('newPlayer', { id: socket.id, player: players[socket.id] });
+    const isNewPlayer = !players[socket.id];
+    players[socket.id] = data;
+
+    if (isNewPlayer) {
+      // Only broadcast once to let everyone know they spawned
+      socket.broadcast.emit('newPlayer', { id: socket.id, player: data });
     } else {
-      players[socket.id] = data;
-      socket.broadcast.emit('playerMoved', { id: socket.id, player: players[socket.id] });
+      // PROXIMITY FILTER: Only send movement to players within 2500 pixels
+      for (let id in players) {
+        if (id !== socket.id) {
+          let otherPlayer = players[id];
+          let dist = Math.hypot(otherPlayer.x - data.x, otherPlayer.y - data.y);
+          if (dist <= SYNC_RADIUS) {
+            io.to(id).emit('playerMoved', { id: socket.id, player: data });
+          }
+        }
+      }
     }
   });
 
   socket.on('shoot', (bulletData) => {
-    socket.broadcast.emit('networkBullet', bulletData);
+    let shooter = players[socket.id];
+    if (!shooter) return;
+
+    // PROXIMITY FILTER: Only send bullets to nearby players
+    for (let id in players) {
+      if (id !== socket.id) {
+        let otherPlayer = players[id];
+        let dist = Math.hypot(otherPlayer.x - shooter.x, otherPlayer.y - shooter.y);
+        if (dist <= SYNC_RADIUS) {
+          io.to(id).emit('networkBullet', bulletData);
+        }
+      }
+    }
   });
 
   socket.on('updateScore', async (data) => {
