@@ -24,8 +24,22 @@ function cleanupRoom(roomName) {
 
 io.on('connection', (socket) => {
     
+    // RESTORED: Authentication with PIN & DB Hook
     socket.on('login', (data, callback) => {
-        socket.playerName = data.name;
+        const { name, pin } = data;
+
+        // ==========================================
+        // 🔒 YOUR DATABASE VERIFICATION GOES HERE 🔒
+        // Example: 
+        // const isValid = await db.verifyUser(name, pin);
+        // if (!isValid) return callback({ success: false, message: "Invalid PIN or Callsign" });
+        // ==========================================
+
+        if (!pin) {
+            return callback({ success: false, message: "Secret PIN required." });
+        }
+
+        socket.playerName = name;
         callback({ success: true });
     });
 
@@ -34,7 +48,6 @@ io.on('connection', (socket) => {
         let nameTaken = false;
         let existingId = null;
 
-        // THE FIX: "id !== socket.id" ensures you don't kick yourself when respawning!
         for (let id in players) {
             if (id !== socket.id && players[id].room === roomName && players[id].name.toLowerCase() === socket.playerName.toLowerCase()) {
                 nameTaken = true; existingId = id;
