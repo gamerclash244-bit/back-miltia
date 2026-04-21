@@ -9,7 +9,6 @@ const PORT = process.env.PORT || 3000;
 let players = {};
 let leaderboards = {}; 
 
-// NEW: Automatically erase the room's scoreboard if everyone leaves
 function cleanupRoom(roomName) {
     let hasPlayers = false;
     for (let id in players) {
@@ -25,21 +24,19 @@ function cleanupRoom(roomName) {
 
 io.on('connection', (socket) => {
     
-    // STEP 1: Basic Authentication
     socket.on('login', (data, callback) => {
         socket.playerName = data.name;
         callback({ success: true });
     });
 
-    // STEP 2: Join Specific Game Mode
     socket.on('joinGame', (data, callback) => {
         let roomName = data.room || "GLOBAL_PUBLIC"; 
         let nameTaken = false;
         let existingId = null;
 
-        // Ensure no duplicate names in the chosen room
+        // THE FIX: "id !== socket.id" ensures you don't kick yourself when respawning!
         for (let id in players) {
-            if (players[id].room === roomName && players[id].name.toLowerCase() === socket.playerName.toLowerCase()) {
+            if (id !== socket.id && players[id].room === roomName && players[id].name.toLowerCase() === socket.playerName.toLowerCase()) {
                 nameTaken = true; existingId = id;
             }
         }
@@ -52,7 +49,6 @@ io.on('connection', (socket) => {
             cleanupRoom(roomName);
         }
 
-        // Leave previous room if returning from death
         if (players[socket.id]) {
             let oldRoom = players[socket.id].room;
             socket.leave(oldRoom);
@@ -61,7 +57,6 @@ io.on('connection', (socket) => {
             cleanupRoom(oldRoom);
         }
 
-        // Connect the socket to the isolated room
         socket.join(roomName);
 
         players[socket.id] = {
@@ -89,14 +84,12 @@ io.on('connection', (socket) => {
         io.to(roomName).emit('leaderboardUpdate', leaderboards[roomName]);
     });
 
-    // MOVEMENT (Isolated to Room)
     socket.on('playerMovement', (data) => {
         let p = players[socket.id]; if (!p) return;
         p.x = data.x; p.y = data.y; p.aimAngle = data.aimAngle; p.color = data.color; p.health = data.health; p.weapon = data.weapon;
         socket.broadcast.to(p.room).emit('playerMoved', { id: socket.id, player: p });
     });
 
-    // BULLETS (Isolated to Room)
     socket.on('shoot', (data) => {
         let p = players[socket.id]; if (!p) return;
         socket.broadcast.to(p.room).emit('networkBullet', {
@@ -104,14 +97,12 @@ io.on('connection', (socket) => {
         });
     });
 
-    // SCORE & LEADERBOARD (Isolated to Room)
     socket.on('updateScore', (data) => {
         let p = players[socket.id]; if (!p) return;
         let roomLB = leaderboards[p.room];
-        if (!roomLB) return; // Safety check
+        if (!roomLB) return; 
         
         let found = roomLB.find(lb => lb.name === data.name);
-        
         if (found) {
             if (data.kills > found.bestStreak) found.bestStreak = data.kills;
             found.totalKills += data.kills;
@@ -123,18 +114,17 @@ io.on('connection', (socket) => {
         io.to(p.room).emit('leaderboardUpdate', roomLB);
     });
 
-    // DISCONNECT
     socket.on('disconnect', () => {
         let p = players[socket.id];
         if (p) {
             let oldRoom = p.room;
             socket.broadcast.to(oldRoom).emit('playerDisconnected', socket.id);
             delete players[socket.id];
-            cleanupRoom(oldRoom); // Trigger erase check
+            cleanupRoom(oldRoom); 
         }
     });
 });
 
-http.listen(PORT, () => {
+http.listen(PORT, '0.0.0.0', () => {
     console.log(`Server listening on port ${PORT}`);
 });
