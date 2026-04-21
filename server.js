@@ -93,14 +93,14 @@ class ServerNPC {
             }
         });
 
-        // 💥 FASTER SHOOTING & BOTS KILLING BOTS 💥
+        // 💥 FASTER SHOOTING LOGIC 💥
         if (this.target && this.health > 0) {
             let targetX = this.target.x + 20; let targetY = this.target.y + 20;
             let desiredAngle = Math.atan2(targetY - (this.y + 20), targetX - (this.x + 20));
             this.aimAngle += (desiredAngle - this.aimAngle) * 0.2; 
 
-            // Fast trigger finger (every ~200ms-400ms)
-            if (now - this.lastShotTime > 200 + Math.random() * 200) {
+            // Much faster trigger finger
+            if (now - this.lastShotTime > 300 + Math.random() * 200) {
                 this.lastShotTime = now;
                 
                 io.to('GLOBAL_PUBLIC').emit('networkBullet', {
@@ -109,7 +109,7 @@ class ServerNPC {
                     radius: 4, color: '#ffffff', ownerId: this.id 
                 });
 
-                // Server automatically calculates if a Bot hit another Bot
+                // Bot vs Bot damage logic
                 if (this.target.id && this.target.id.startsWith('npc_') && Math.random() > 0.7) {
                     this.target.health -= 15;
                     if (this.target.health <= 0) {
@@ -138,8 +138,19 @@ setInterval(() => {
     let publicPlayers = {};
     for (let id in players) { if (players[id].room === 'GLOBAL_PUBLIC') publicPlayers[id] = players[id]; }
     
-    globalNPCs.forEach(npc => npc.update(33, publicPlayers));
-    io.to('GLOBAL_PUBLIC').emit('npcSync', globalNPCs);
+    let safeSyncPayload = [];
+    globalNPCs.forEach(npc => {
+        npc.update(33, publicPlayers);
+        // This safely strips out circular references so the JSON doesn't crash!
+        if (npc.health > 0) {
+            safeSyncPayload.push({
+                id: npc.id, name: npc.name, color: npc.color,
+                x: npc.x, y: npc.y, health: npc.health, aimAngle: npc.aimAngle
+            });
+        }
+    });
+    
+    io.to('GLOBAL_PUBLIC').emit('npcSync', safeSyncPayload);
 }, 33);
 // ───────────────────────────────
 
@@ -233,7 +244,6 @@ io.on('connection', (socket) => {
         });
     });
 
-    // SERVER-AUTHORITATIVE BOT DAMAGE (When Player hits Bot)
     socket.on('damageBot', (data) => {
         let p = players[socket.id];
         if (!p || p.room !== 'GLOBAL_PUBLIC') return;
