@@ -7,28 +7,40 @@ const io = require('socket.io')(http, {
 
 const PORT = process.env.PORT || 3000;
 let players = {};
-let leaderboards = {}; // Now an object to hold separate leaderboards per room
+let leaderboards = {}; 
 
 io.on('connection', (socket) => {
     
-    // LOGIN & ROOM ASSIGNMENT
+    // STEP 1: Basic Authentication
     socket.on('login', (data, callback) => {
-        let roomName = data.room || "GLOBAL_PUBLIC"; // Default to public if left blank
+        socket.playerName = data.name;
+        callback({ success: true });
+    });
+
+    // STEP 2: Join Specific Game Mode
+    socket.on('joinGame', (data, callback) => {
+        let roomName = data.room || "GLOBAL_PUBLIC"; 
         let nameTaken = false;
         let existingId = null;
 
-        // Check if name is taken IN THIS SPECIFIC ROOM
+        // Ensure no duplicate names in the chosen room
         for (let id in players) {
-            if (players[id].room === roomName && players[id].name.toLowerCase() === data.name.toLowerCase()) {
+            if (players[id].room === roomName && players[id].name.toLowerCase() === socket.playerName.toLowerCase()) {
                 nameTaken = true; existingId = id;
             }
         }
 
         if (nameTaken) {
             io.to(existingId).emit('kicked', { reason: "Logged in from another location in this room." });
-            socket.leave(roomName);
+            io.sockets.sockets.get(existingId)?.leave(roomName);
             delete players[existingId];
             socket.broadcast.to(roomName).emit('playerDisconnected', existingId);
+        }
+
+        // Leave previous room if returning from death
+        if (players[socket.id]) {
+            socket.leave(players[socket.id].room);
+            socket.broadcast.to(players[socket.id].room).emit('playerDisconnected', socket.id);
         }
 
         // Connect the socket to the isolated room
@@ -37,16 +49,17 @@ io.on('connection', (socket) => {
         players[socket.id] = {
             id: socket.id,
             room: roomName,
-            name: data.name,
+            name: socket.playerName,
             x: Math.random() * 8000 + 1000, 
             y: Math.random() * 500 + 200,
-            aimAngle: 0, color: "#e74c3c", health: 100, weapon: 'rifle'
+            aimAngle: 0, 
+            color: data.color || "#e74c3c", 
+            health: 100, 
+            weapon: 'rifle'
         };
 
-        // Create an empty leaderboard for this room if it doesn't exist yet
         if (!leaderboards[roomName]) leaderboards[roomName] = [];
 
-        // Filter players to ONLY send the ones in the same room to the new user
         let playersInRoom = {};
         for (let id in players) {
             if (players[id].room === roomName) playersInRoom[id] = players[id];
@@ -58,14 +71,14 @@ io.on('connection', (socket) => {
         io.to(roomName).emit('leaderboardUpdate', leaderboards[roomName]);
     });
 
-    // MOVEMENT (Isolated)
+    // MOVEMENT (Isolated to Room)
     socket.on('playerMovement', (data) => {
         let p = players[socket.id]; if (!p) return;
         p.x = data.x; p.y = data.y; p.aimAngle = data.aimAngle; p.color = data.color; p.health = data.health; p.weapon = data.weapon;
         socket.broadcast.to(p.room).emit('playerMoved', { id: socket.id, player: p });
     });
 
-    // BULLETS (Isolated)
+    // BULLETS (Isolated to Room)
     socket.on('shoot', (data) => {
         let p = players[socket.id]; if (!p) return;
         socket.broadcast.to(p.room).emit('networkBullet', {
@@ -73,7 +86,7 @@ io.on('connection', (socket) => {
         });
     });
 
-    // SCORE & LEADERBOARD (Isolated)
+    // SCORE & LEADERBOARD (Isolated to Room)
     socket.on('updateScore', (data) => {
         let p = players[socket.id]; if (!p) return;
         let roomLB = leaderboards[p.room];
@@ -100,7 +113,6 @@ io.on('connection', (socket) => {
     });
 });
 
-// Using 0.0.0.0 allows LAN connections
-http.listen(PORT, '0.0.0.0', () => {
+http.listen(PORT, () => {
     console.log(`Server listening on port ${PORT}`);
 });
