@@ -1,121 +1,96 @@
 const express = require('express');
 const app = express();
 const http = require('http').createServer(app);
-const mongoose = require('mongoose');
-const io = require('socket.io')(http, { cors: { origin: "*" } });
-
-const mongoURI = process.env.MONGO_URI; 
-if (mongoURI) {
-  mongoose.connect(mongoURI)
-    .then(() => console.log('MongoDB Connected successfully!'))
-    .catch(err => console.log('MongoDB Connection Error:', err));
-}
-
-const PlayerSchema = new mongoose.Schema({
-  name: { type: String, unique: true }, 
-  pin: { type: String }, 
-  totalKills: { type: Number, default: 0 },
-  bestStreak: { type: Number, default: 0 } 
-});
-const PlayerDB = mongoose.model('Player', PlayerSchema);
-
-const players = {};
-const SYNC_RADIUS = 2500; // Maximum pixel distance to send network updates
-
-io.on('connection', async (socket) => {
-  console.log('Connection attempt:', socket.id);
-  
-  try {
-    const topPlayers = await PlayerDB.find().sort({ bestStreak: -1 }).limit(10);
-    socket.emit('leaderboardUpdate', topPlayers);
-  } catch (err) {}
-
-  socket.on('login', async (data, callback) => {
-    if (!data.name || !data.pin) return callback({ success: false, message: "Callsign and PIN required." });
-    try {
-      let p = await PlayerDB.findOne({ name: data.name });
-      if (p) {
-        if (p.pin === data.pin) {
-          callback({ success: true, currentPlayers: players });
-        } else {
-          callback({ success: false, message: "Callsign taken. Incorrect PIN." });
-        }
-      } else {
-        p = new PlayerDB({ name: data.name, pin: data.pin });
-        await p.save();
-        callback({ success: true, currentPlayers: players });
-      }
-    } catch (err) {
-      callback({ success: false, message: "Database Error. Check Render Logs." });
-    }
-  });
-
-  socket.on('playerMovement', (data) => {
-    const isNewPlayer = !players[socket.id];
-    players[socket.id] = data;
-
-    if (isNewPlayer) {
-      // Only broadcast once to let everyone know they spawned
-      socket.broadcast.emit('newPlayer', { id: socket.id, player: data });
-    } else {
-      // PROXIMITY FILTER: Only send movement to players within 2500 pixels
-      for (let id in players) {
-        if (id !== socket.id) {
-          let otherPlayer = players[id];
-          let dist = Math.hypot(otherPlayer.x - data.x, otherPlayer.y - data.y);
-          if (dist <= SYNC_RADIUS) {
-            io.to(id).emit('playerMoved', { id: socket.id, player: data });
-          }
-        }
-      }
-    }
-  });
-
-  socket.on('shoot', (bulletData) => {
-    let shooter = players[socket.id];
-    if (!shooter) return;
-
-    // PROXIMITY FILTER: Only send bullets to nearby players
-    for (let id in players) {
-      if (id !== socket.id) {
-        let otherPlayer = players[id];
-        let dist = Math.hypot(otherPlayer.x - shooter.x, otherPlayer.y - shooter.y);
-        if (dist <= SYNC_RADIUS) {
-          io.to(id).emit('networkBullet', bulletData);
-        }
-      }
-    }
-  });
-
-  socket.on('updateScore', async (data) => {
-    if (!data.name || !data.kills) return; 
-    try {
-      let p = await PlayerDB.findOne({ name: data.name });
-      if (p) {
-        p.totalKills += data.kills;
-        if (data.kills > p.bestStreak) p.bestStreak = data.kills; 
-        await p.save();
-        const topPlayers = await PlayerDB.find().sort({ bestStreak: -1 }).limit(10);
-        io.emit('leaderboardUpdate', topPlayers);
-      }
-    } catch (err) {}
-  });
-
-  socket.on('disconnect', () => {
-    delete players[socket.id];
-    io.emit('playerDisconnected', socket.id);
-  });
+const io = require('socket.io')(http, {
+    cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
 const PORT = process.env.PORT || 3000;
-http.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+let players = {};
+let leaderboards = [];
 
-// Add this inside your Render server.js file
-let serverBots = [];
-// (Initialize your serverBots array here with the data from npc.js)
+io.on('connection', (socket) => {
+    
+    // LOGIN SYSTEM (Prevents duplicate callsighs)
+    socket.on('login', (data, callback) => {
+        let nameTaken = false;
+        let existingId = null;
 
-setInterval(() => {
-    // 1. Loop through serverBots and update their X/Y coordinates
-    // 2. Broadcast the bot data to all connected clients
-    io.emit('botsSync', serverBots);
-}, 50); // 50ms = 20 ticks per second
+        for (let id in players) {
+            if (players[id].name.toLowerCase() === data.name.toLowerCase()) {
+                nameTaken = true;
+                existingId = id;
+            }
+        }
+
+        if (nameTaken) {
+            // Kick old player so new device can take the name
+            io.to(existingId).emit('kicked', { reason: "Logged in from another location." });
+            delete players[existingId];
+            socket.broadcast.emit('playerDisconnected', existingId);
+        }
+
+        players[socket.id] = {
+            id: socket.id,
+            name: data.name,
+            x: 100, y: 1500,
+            aimAngle: 0,
+            color: "#e74c3c",
+            health: 100,
+            weapon: 'rifle'
+        };
+
+        socket.broadcast.emit('newPlayer', { id: socket.id, player: players[socket.id] });
+        callback({ success: true, currentPlayers: players });
+        io.emit('leaderboardUpdate', leaderboards);
+    });
+
+    // MOVEMENT & SYNC
+    socket.on('playerMovement', (data) => {
+        if (!players[socket.id]) return;
+        players[socket.id].x = data.x;
+        players[socket.id].y = data.y;
+        players[socket.id].aimAngle = data.aimAngle;
+        players[socket.id].color = data.color;
+        players[socket.id].health = data.health;
+        players[socket.id].weapon = data.weapon;
+
+        socket.broadcast.emit('playerMoved', { id: socket.id, player: players[socket.id] });
+    });
+
+    // SHOOTING SYNC
+    socket.on('shoot', (data) => {
+        socket.broadcast.emit('networkBullet', {
+            x: data.x,
+            y: data.y,
+            vx: data.vx,
+            vy: data.vy,
+            radius: data.radius,
+            ownerId: data.ownerId
+        });
+    });
+
+    // SCORE & LEADERBOARD
+    socket.on('updateScore', (data) => {
+        let found = leaderboards.find(p => p.name === data.name);
+        if (found) {
+            if (data.kills > found.bestStreak) found.bestStreak = data.kills;
+            found.totalKills += data.kills;
+        } else {
+            leaderboards.push({ name: data.name, bestStreak: data.kills, totalKills: data.kills });
+        }
+        
+        // Sort highest total kills first
+        leaderboards.sort((a, b) => b.totalKills - a.totalKills);
+        io.emit('leaderboardUpdate', leaderboards);
+    });
+
+    socket.on('disconnect', () => {
+        delete players[socket.id];
+        io.emit('playerDisconnected', socket.id);
+    });
+});
+
+http.listen(PORT, () => {
+    console.log(`Server listening on port ${PORT}`);
+});
