@@ -5,6 +5,20 @@ const io = require('socket.io')(http, {
     cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
+// ── NEW: DATABASE SETUP ──
+const sqlite3 = require('sqlite3').verbose();
+const db = new sqlite3.Database('./baylerbay.sqlite', (err) => {
+    if (err) console.error("Database connection error:", err.message);
+    else console.log('Connected to the BaylerBay Secure Database.');
+});
+
+// Create the Users table if it doesn't exist
+db.run(`CREATE TABLE IF NOT EXISTS users (
+    callsign TEXT PRIMARY KEY,
+    pin TEXT NOT NULL
+)`);
+// ─────────────────────────
+
 const PORT = process.env.PORT || 3000;
 let players = {};
 let leaderboards = {}; 
@@ -24,30 +38,47 @@ function cleanupRoom(roomName) {
 
 io.on('connection', (socket) => {
     
-    // RESTORED: Authentication with PIN & DB Hook
+    // ── DATABASE AUTHENTICATION LOGIC ──
     socket.on('login', (data, callback) => {
         const { name, pin } = data;
 
-        // ==========================================
-        // 🔒 YOUR DATABASE VERIFICATION GOES HERE 🔒
-        // Example: 
-        // const isValid = await db.verifyUser(name, pin);
-        // if (!isValid) return callback({ success: false, message: "Invalid PIN or Callsign" });
-        // ==========================================
-
-        if (!pin) {
-            return callback({ success: false, message: "Secret PIN required." });
+        if (!name || !pin) {
+            return callback({ success: false, message: "Callsign and PIN required." });
         }
 
-        socket.playerName = name;
-        callback({ success: true });
+        const callsignLower = name.toLowerCase();
+
+        // 1. Look for the user in the database
+        db.get(`SELECT * FROM users WHERE LOWER(callsign) = ?`, [callsignLower], (err, row) => {
+            if (err) return callback({ success: false, message: "Database uplink error." });
+
+            if (row) {
+                // 2. User exists: Verify the PIN
+                if (row.pin === pin) {
+                    socket.playerName = row.callsign; // Use their properly capitalized saved name
+                    callback({ success: true });
+                } else {
+                    callback({ success: false, message: "ACCESS DENIED: Incorrect PIN." });
+                }
+            } else {
+                // 3. New User: Register them in the database
+                db.run(`INSERT INTO users (callsign, pin) VALUES (?, ?)`, [name, pin], (insertErr) => {
+                    if (insertErr) return callback({ success: false, message: "Registration failed." });
+                    
+                    socket.playerName = name;
+                    callback({ success: true });
+                });
+            }
+        });
     });
+    // ───────────────────────────────────
 
     socket.on('joinGame', (data, callback) => {
         let roomName = data.room || "GLOBAL_PUBLIC"; 
         let nameTaken = false;
         let existingId = null;
 
+        // Ensure no duplicate active connections
         for (let id in players) {
             if (id !== socket.id && players[id].room === roomName && players[id].name.toLowerCase() === socket.playerName.toLowerCase()) {
                 nameTaken = true; existingId = id;
@@ -55,7 +86,7 @@ io.on('connection', (socket) => {
         }
 
         if (nameTaken) {
-            io.to(existingId).emit('kicked', { reason: "Logged in from another location in this room." });
+            io.to(existingId).emit('kicked', { reason: "Logged in from another location." });
             io.sockets.sockets.get(existingId)?.leave(roomName);
             delete players[existingId];
             socket.broadcast.to(roomName).emit('playerDisconnected', existingId);
