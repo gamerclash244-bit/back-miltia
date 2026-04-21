@@ -4,22 +4,33 @@ const http = require('http').createServer(app);
 const io = require('socket.io')(http, {
     cors: { origin: "*", methods: ["GET", "POST"] }
 });
-
-// ── NEW: DATABASE SETUP ──
-const sqlite3 = require('sqlite3').verbose();
-const db = new sqlite3.Database('./baylerbay.sqlite', (err) => {
-    if (err) console.error("Database connection error:", err.message);
-    else console.log('Connected to the BaylerBay Secure Database.');
-});
-
-// Create the Users table if it doesn't exist
-db.run(`CREATE TABLE IF NOT EXISTS users (
-    callsign TEXT PRIMARY KEY,
-    pin TEXT NOT NULL
-)`);
-// ─────────────────────────
+const { MongoClient } = require('mongodb');
 
 const PORT = process.env.PORT || 3000;
+
+// ── MONGODB SETUP ──
+// Replace the string below with your actual MongoDB connection URI!
+// Example: "mongodb+srv://<username>:<password>@cluster0.mongodb.net/?retryWrites=true&w=majority"
+const uri = process.env.MONGODB_URI || "mongodb+srv://gamerclash244_db_user:YJGhqcHaRmOMoF9P@cluster0.5o0s4pv.mongodb.net/?appName=Cluster0";
+const client = new MongoClient(uri);
+let usersCollection;
+
+async function connectDB() {
+    try {
+        await client.connect();
+        console.log("Connected to MongoDB Secure Uplink!");
+        const database = client.db('baylerbayOps'); // Name of your database
+        usersCollection = database.collection('users'); // Name of your collection
+        
+        // Creates an index so we can search callsigns quickly (case-insensitive)
+        await usersCollection.createIndex({ callsignLower: 1 }, { unique: true });
+    } catch (err) {
+        console.error("MongoDB connection error:", err);
+    }
+}
+connectDB();
+// ───────────────────
+
 let players = {};
 let leaderboards = {}; 
 
@@ -38,8 +49,8 @@ function cleanupRoom(roomName) {
 
 io.on('connection', (socket) => {
     
-    // ── DATABASE AUTHENTICATION LOGIC ──
-    socket.on('login', (data, callback) => {
+    // ── DATABASE AUTHENTICATION LOGIC (MONGODB) ──
+    socket.on('login', async (data, callback) => {
         const { name, pin } = data;
 
         if (!name || !pin) {
@@ -48,30 +59,40 @@ io.on('connection', (socket) => {
 
         const callsignLower = name.toLowerCase();
 
-        // 1. Look for the user in the database
-        db.get(`SELECT * FROM users WHERE LOWER(callsign) = ?`, [callsignLower], (err, row) => {
-            if (err) return callback({ success: false, message: "Database uplink error." });
+        try {
+            // Wait for the collection to load just in case the server just woke up
+            if (!usersCollection) {
+                return callback({ success: false, message: "Database booting up, try again in 5 seconds." });
+            }
 
-            if (row) {
+            // 1. Look for the user in MongoDB
+            const user = await usersCollection.findOne({ callsignLower: callsignLower });
+
+            if (user) {
                 // 2. User exists: Verify the PIN
-                if (row.pin === pin) {
-                    socket.playerName = row.callsign; // Use their properly capitalized saved name
+                if (user.pin === pin) {
+                    socket.playerName = user.callsign; // Use their properly capitalized saved name
                     callback({ success: true });
                 } else {
                     callback({ success: false, message: "ACCESS DENIED: Incorrect PIN." });
                 }
             } else {
-                // 3. New User: Register them in the database
-                db.run(`INSERT INTO users (callsign, pin) VALUES (?, ?)`, [name, pin], (insertErr) => {
-                    if (insertErr) return callback({ success: false, message: "Registration failed." });
-                    
-                    socket.playerName = name;
-                    callback({ success: true });
+                // 3. New User: Register them in MongoDB
+                await usersCollection.insertOne({
+                    callsign: name,
+                    callsignLower: callsignLower,
+                    pin: pin
                 });
+                
+                socket.playerName = name;
+                callback({ success: true });
             }
-        });
+        } catch (err) {
+            console.error("DB Login Error:", err);
+            callback({ success: false, message: "Database uplink error." });
+        }
     });
-    // ───────────────────────────────────
+    // ─────────────────────────────────────────────
 
     socket.on('joinGame', (data, callback) => {
         let roomName = data.room || "GLOBAL_PUBLIC"; 
@@ -86,7 +107,7 @@ io.on('connection', (socket) => {
         }
 
         if (nameTaken) {
-            io.to(existingId).emit('kicked', { reason: "Logged in from another location." });
+            io.to(existingId).emit('kicked', { reason: "Logged in from another location in this room." });
             io.sockets.sockets.get(existingId)?.leave(roomName);
             delete players[existingId];
             socket.broadcast.to(roomName).emit('playerDisconnected', existingId);
