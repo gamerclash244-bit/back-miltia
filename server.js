@@ -9,6 +9,20 @@ const PORT = process.env.PORT || 3000;
 let players = {};
 let leaderboards = {}; 
 
+// NEW: Automatically erase the room's scoreboard if everyone leaves
+function cleanupRoom(roomName) {
+    let hasPlayers = false;
+    for (let id in players) {
+        if (players[id].room === roomName) {
+            hasPlayers = true;
+            break;
+        }
+    }
+    if (!hasPlayers) {
+        delete leaderboards[roomName];
+    }
+}
+
 io.on('connection', (socket) => {
     
     // STEP 1: Basic Authentication
@@ -35,12 +49,16 @@ io.on('connection', (socket) => {
             io.sockets.sockets.get(existingId)?.leave(roomName);
             delete players[existingId];
             socket.broadcast.to(roomName).emit('playerDisconnected', existingId);
+            cleanupRoom(roomName);
         }
 
         // Leave previous room if returning from death
         if (players[socket.id]) {
-            socket.leave(players[socket.id].room);
-            socket.broadcast.to(players[socket.id].room).emit('playerDisconnected', socket.id);
+            let oldRoom = players[socket.id].room;
+            socket.leave(oldRoom);
+            socket.broadcast.to(oldRoom).emit('playerDisconnected', socket.id);
+            delete players[socket.id];
+            cleanupRoom(oldRoom);
         }
 
         // Connect the socket to the isolated room
@@ -90,6 +108,8 @@ io.on('connection', (socket) => {
     socket.on('updateScore', (data) => {
         let p = players[socket.id]; if (!p) return;
         let roomLB = leaderboards[p.room];
+        if (!roomLB) return; // Safety check
+        
         let found = roomLB.find(lb => lb.name === data.name);
         
         if (found) {
@@ -107,8 +127,10 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => {
         let p = players[socket.id];
         if (p) {
-            socket.broadcast.to(p.room).emit('playerDisconnected', socket.id);
+            let oldRoom = p.room;
+            socket.broadcast.to(oldRoom).emit('playerDisconnected', socket.id);
             delete players[socket.id];
+            cleanupRoom(oldRoom); // Trigger erase check
         }
     });
 });
