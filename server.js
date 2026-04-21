@@ -11,7 +11,6 @@ let leaderboards = [];
 
 io.on('connection', (socket) => {
     
-    // LOGIN SYSTEM (Prevents duplicate callsighs)
     socket.on('login', (data, callback) => {
         let nameTaken = false;
         let existingId = null;
@@ -24,7 +23,6 @@ io.on('connection', (socket) => {
         }
 
         if (nameTaken) {
-            // Kick old player so new device can take the name
             io.to(existingId).emit('kicked', { reason: "Logged in from another location." });
             delete players[existingId];
             socket.broadcast.emit('playerDisconnected', existingId);
@@ -33,7 +31,11 @@ io.on('connection', (socket) => {
         players[socket.id] = {
             id: socket.id,
             name: data.name,
-            x: 100, y: 1500,
+            
+            // NEW: Networked Players spawn randomly out of the sky 
+            x: Math.random() * 8000 + 1000, 
+            y: Math.random() * 500 + 200,
+            
             aimAngle: 0,
             color: "#e74c3c",
             health: 100,
@@ -45,7 +47,6 @@ io.on('connection', (socket) => {
         io.emit('leaderboardUpdate', leaderboards);
     });
 
-    // MOVEMENT & SYNC
     socket.on('playerMovement', (data) => {
         if (!players[socket.id]) return;
         players[socket.id].x = data.x;
@@ -58,7 +59,6 @@ io.on('connection', (socket) => {
         socket.broadcast.emit('playerMoved', { id: socket.id, player: players[socket.id] });
     });
 
-    // SHOOTING SYNC
     socket.on('shoot', (data) => {
         socket.broadcast.emit('networkBullet', {
             x: data.x,
@@ -70,7 +70,6 @@ io.on('connection', (socket) => {
         });
     });
 
-    // SCORE & LEADERBOARD
     socket.on('updateScore', (data) => {
         let found = leaderboards.find(p => p.name === data.name);
         if (found) {
@@ -80,7 +79,6 @@ io.on('connection', (socket) => {
             leaderboards.push({ name: data.name, bestStreak: data.kills, totalKills: data.kills });
         }
         
-        // Sort highest total kills first
         leaderboards.sort((a, b) => b.totalKills - a.totalKills);
         io.emit('leaderboardUpdate', leaderboards);
     });
