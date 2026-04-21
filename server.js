@@ -67,7 +67,6 @@ class ServerNPC {
             if (d < minDist) { minDist = d; closest = p; }
         }
         
-        // Also target other bots
         for (let i=0; i<globalNPCs.length; i++) {
             let ob = globalNPCs[i]; if (ob.id === this.id || ob.health <= 0) continue;
             let d = Math.hypot(ob.x - this.x, ob.y - this.y);
@@ -100,8 +99,8 @@ class ServerNPC {
             let desiredAngle = Math.atan2(targetY - (this.y + 20), targetX - (this.x + 20));
             this.aimAngle += (desiredAngle - this.aimAngle) * 0.2; 
 
-            // Much faster trigger finger (down from 500ms+ delay)
-            if (now - this.lastShotTime > 200 + Math.random() * 150) {
+            // Much faster trigger finger (down from 500ms delay)
+            if (now - this.lastShotTime > 300 + Math.random() * 200) {
                 this.lastShotTime = now;
                 io.to('GLOBAL_PUBLIC').emit('networkBullet', {
                     x: this.x + 20, y: this.y + 20,
@@ -229,10 +228,8 @@ io.on('connection', (socket) => {
         if (bot && bot.health > 0) {
             bot.health -= data.damage;
             if (bot.health <= 0) {
-                // Broadcast death so killer client gets the killfeed/score trigger
                 io.to('GLOBAL_PUBLIC').emit('botDied', { botId: bot.id, botName: bot.name, killerId: socket.id, killerName: p.name });
                 
-                // Respawn bot
                 setTimeout(() => {
                     bot.health = 100;
                     bot.x = Math.random() * 8000 + 1000;
