@@ -353,7 +353,7 @@ setInterval(() => {
 // ── GAME STATE ──
 let players = {};
 let roomData = {}; // private room metadata
-
+let publicScores = {}; // Tracks public leaderboard
 // ── ROOM HELPERS ──
 function initRoomData(roomName, hostId, config) {
     roomData[roomName] = {
@@ -542,6 +542,11 @@ io.on('connection', (socket) => {
         };
         const playersInRoom = getPlayersInRoom(roomName);
         socket.broadcast.to(roomName).emit('newPlayer', { id: socket.id, player: players[socket.id] });
+        
+        // Send current leaderboard to the new player immediately
+        const topPlayers = Object.values(publicScores).sort((a, b) => b.totalKills - a.totalKills).slice(0, 10);
+        socket.emit('leaderboardUpdate', topPlayers);
+        
         callback({ success: true, currentPlayers: playersInRoom });
     });
 
@@ -699,8 +704,29 @@ io.on('connection', (socket) => {
     });
 
     // UPDATE SCORE (public leaderboard, legacy)
+// UPDATE SCORE (public leaderboard)
     socket.on('updateScore', (data) => {
-        // no-op for now; room kills use reportKill
+        if (!data.name) return;
+        
+        // Initialize player in the scores object if they don't exist
+        if (!publicScores[data.name]) {
+            publicScores[data.name] = { name: data.name, totalKills: 0, bestStreak: 0 };
+        }
+
+        // Update their stats
+        publicScores[data.name].totalKills = data.kills;
+        if (data.kills > publicScores[data.name].bestStreak) {
+            publicScores[data.name].bestStreak = data.kills;
+        }
+
+        // Sort the top 10 players by total kills
+        const topPlayers = Object.values(publicScores)
+            .sort((a, b) => b.totalKills - a.totalKills)
+            .slice(0, 10);
+
+        // Broadcast the updated leaderboard to everyone in the public lobby
+        io.to('GLOBAL_PUBLIC').emit('leaderboardUpdate', topPlayers);
+    });
     });
 
     // ── ROOM MATCH EVENTS ──
