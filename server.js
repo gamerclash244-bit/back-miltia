@@ -8,7 +8,7 @@ const { MongoClient } = require('mongodb');
 
 const PORT = process.env.PORT || 3000;
 
-// ── MONGODB SECURE UPLINK ──
+// ── MONGODB ──
 const uri = process.env.MONGODB_URI || "mongodb+srv://gamerclash244_db_user:YJGhqcHaRmOMoF9P@cluster0.5o0s4pv.mongodb.net/?appName=Cluster0";
 const client = new MongoClient(uri);
 let usersCollection;
@@ -17,17 +17,16 @@ async function connectDB() {
     try {
         await client.connect();
         console.log("✅ Connected to MongoDB Secure Uplink!");
-        const database = client.db('baylerbayOps'); 
-        usersCollection = database.collection('users'); 
+        const database = client.db('baylerbayOps');
+        usersCollection = database.collection('users');
         await usersCollection.createIndex({ callsignLower: 1 }, { unique: true });
     } catch (err) {
         console.error("❌ MongoDB connection error:", err);
     }
 }
 connectDB();
-// ───────────────────────────
 
-// ── SERVER-SIDE MAP & PHYSICS FOR BOTS ──
+// ── SERVER-SIDE MAP ──
 const worldWidth = 10000; const worldHeight = 2500;
 let serverMap = [];
 
@@ -35,7 +34,12 @@ function mulberry32(a) { return function() { var t = a += 0x6D2B79F5; t = Math.i
 function checkOverlap(nx, ny, nw, nh) { const PAD = 40; for (let obj of serverMap) { if (obj.type === 'wall' || obj.type === 'floor') continue; if (nx < obj.x + obj.w + PAD && nx + nw + PAD > obj.x && ny < obj.y + obj.h + PAD && ny + nh + PAD > obj.y) return true; } return false; }
 
 function buildServerMap() {
-    serverMap = [ { x: -50, y: 0, w: 50, h: worldHeight, type: "wall" }, { x: worldWidth,y: 0, w: 50, h: worldHeight, type: "wall" }, { x: 0, y: -50, w: worldWidth, h: 50, type: "wall" }, { x: 0, y: worldHeight-50, w: worldWidth, h: 50, type: "floor" } ];
+    serverMap = [
+        { x: -50, y: 0, w: 50, h: worldHeight, type: "wall" },
+        { x: worldWidth, y: 0, w: 50, h: worldHeight, type: "wall" },
+        { x: 0, y: -50, w: worldWidth, h: 50, type: "wall" },
+        { x: 0, y: worldHeight - 50, w: worldWidth, h: 50, type: "floor" }
+    ];
     let rand = mulberry32(12345);
     let cx = 200; while (cx < worldWidth - 400) { let pw = 130 + rand() * 270, py = worldHeight - 130 - rand() * 520; if (!checkOverlap(cx, py, pw, 28)) { serverMap.push({ x: cx, y: py, w: pw, h: 28, type: "plat" }); } cx += pw + 40 + rand() * 140; }
     cx = 350; while (cx < worldWidth - 600) { let pw = 110 + rand() * 200, py = worldHeight - 650 - rand() * 380; if (!checkOverlap(cx, py, pw, 24)) { serverMap.push({ x: cx, y: py, w: pw, h: 24, type: "plat" }); } cx += pw + 80 + rand() * 240; }
@@ -44,81 +48,127 @@ function buildServerMap() {
 }
 buildServerMap();
 
-// ── SERVER-SIDE BOTS (SYNCHRONIZED) ──
+// ── SERVER-SIDE BOTS (PUBLIC ONLY — FIXED) ──
 class ServerNPC {
     constructor(id, name, color) {
         this.id = id; this.name = name; this.color = color;
-        this.x = Math.random() * 8000 + 1000; this.y = Math.random() * 500 + 200; 
-        this.width = 40; this.height = 40; this.dx = 0; this.dy = 0;
+        this.width = 40; this.height = 40;
         this.health = 100; this.maxHealth = 100; this.aimAngle = 0;
-        this.target = null; this.decisionTimer = 0; this.moveDir = Math.random() > 0.5 ? 1 : -1; this.lastShotTime = 0;
+        this.target = null; this.decisionTimer = 0;
+        this.moveDir = Math.random() > 0.5 ? 1 : -1;
+        this.lastShotTime = 0; this.onGround = false;
+        this.respawn();
+    }
+
+    respawn() {
+        this.x = Math.random() * 8000 + 1000;
+        this.y = Math.random() * 500 + 200;
+        this.dx = 0; this.dy = 0;
+        this.health = 100;
+        this.target = null;
+        this.decisionTimer = 0;
     }
 
     update(dt, publicPlayers) {
         if (this.health <= 0) return;
         const now = Date.now();
-        this.decisionTimer -= dt; 
+        this.decisionTimer -= dt;
 
-        // Target closest online player or other bot
-        let closest = null; let minDist = 1200; 
+        // ── FIX: Emergency respawn if fallen off world ──
+        if (this.y > worldHeight + 200) {
+            this.respawn();
+            return;
+        }
+
+        // ── FIX: Clamp X to world boundaries ──
+        if (this.x <= 5) { this.x = 5; this.moveDir = 1; }
+        if (this.x >= worldWidth - 50) { this.x = worldWidth - 50; this.moveDir = -1; }
+
+        // Targeting
+        let closest = null; let minDist = 1200;
         for (let id in publicPlayers) {
             let p = publicPlayers[id]; if (p.health <= 0) continue;
             let d = Math.hypot(p.x - this.x, p.y - this.y);
             if (d < minDist) { minDist = d; closest = p; }
         }
-        
-        for (let i=0; i<globalNPCs.length; i++) {
+        for (let i = 0; i < globalNPCs.length; i++) {
             let ob = globalNPCs[i]; if (ob.id === this.id || ob.health <= 0) continue;
             let d = Math.hypot(ob.x - this.x, ob.y - this.y);
             if (d < minDist) { minDist = d; closest = ob; }
         }
-
         this.target = closest;
 
+        // Decision making
         if (this.decisionTimer <= 0) {
-            this.decisionTimer = 1000 + Math.random() * 2000;
-            if (this.target) this.moveDir = this.target.x > this.x ? 1 : -1;
-            else if (Math.random() > 0.7) this.moveDir *= -1;
+            this.decisionTimer = 800 + Math.random() * 1600;
+            if (this.target) {
+                this.moveDir = this.target.x > this.x ? 1 : -1;
+            } else if (Math.random() > 0.6) {
+                this.moveDir *= -1;
+            }
         }
 
-        this.x += this.moveDir * 4; 
-        this.dy += 0.35; 
-        if ((this.target && this.target.y < this.y - 100) || this.y > 2300) this.dy -= 0.8; 
+        // Reverse direction at boundaries
+        if (this.x <= 30 && this.moveDir < 0) this.moveDir = 1;
+        if (this.x >= worldWidth - 70 && this.moveDir > 0) this.moveDir = -1;
+
+        // Movement
+        this.x += this.moveDir * 4;
+        this.dy += 0.35; // gravity
+
+        // ── FIX: Proper jump logic ──
+        // Jump toward target if they're higher up, using a real jump impulse
+        if (this.onGround && this.target && this.target.y < this.y - 80) {
+            this.dy = -10;
+            this.onGround = false;
+        }
+        // Safety net: if sinking far below world bottom but not yet emergency-range, push up
+        if (this.y > worldHeight - 100) {
+            this.dy = -8;
+        }
+
         this.y += this.dy;
 
+        // Platform collision
+        this.onGround = false;
         serverMap.forEach(obj => {
-            if (this.x < obj.x + obj.w && this.x + this.width > obj.x && this.y < obj.y + obj.h && this.y + this.height > obj.y) {
-                if (this.dy > 0) { this.y = obj.y - this.height; this.dy = 0; } 
-                else if (this.dy < 0) { this.y = obj.y + obj.h; this.dy = 0; }
+            if (this.x < obj.x + obj.w && this.x + this.width > obj.x &&
+                this.y < obj.y + obj.h && this.y + this.height > obj.y) {
+                if (this.dy > 0 && (this.y + this.height - this.dy) <= obj.y + 2) {
+                    this.y = obj.y - this.height;
+                    this.dy = 0;
+                    this.onGround = true;
+                } else if (this.dy < 0) {
+                    this.y = obj.y + obj.h;
+                    this.dy = 0;
+                }
             }
         });
 
-        // 💥 FASTER SHOOTING LOGIC 💥
+        // Combat
         if (this.target && this.health > 0) {
-            let targetX = this.target.x + 20; let targetY = this.target.y + 20;
-            let desiredAngle = Math.atan2(targetY - (this.y + 20), targetX - (this.x + 20));
-            this.aimAngle += (desiredAngle - this.aimAngle) * 0.2; 
+            let tx = this.target.x + 20, ty = this.target.y + 20;
+            let desiredAngle = Math.atan2(ty - (this.y + 20), tx - (this.x + 20));
+            this.aimAngle += (desiredAngle - this.aimAngle) * 0.2;
 
-            // Much faster trigger finger
-            if (now - this.lastShotTime > 300 + Math.random() * 200) {
+            if (now - this.lastShotTime > 350 + Math.random() * 250) {
                 this.lastShotTime = now;
-                
                 io.to('GLOBAL_PUBLIC').emit('networkBullet', {
                     x: this.x + 20, y: this.y + 20,
                     vx: Math.cos(this.aimAngle) * 14, vy: Math.sin(this.aimAngle) * 14,
-                    radius: 4, color: '#ffffff', ownerId: this.id 
+                    radius: 4, color: '#ffffff', ownerId: this.id
                 });
-
-                // Bot vs Bot damage logic
+                // Bot vs Bot damage
                 if (this.target.id && this.target.id.startsWith('npc_') && Math.random() > 0.7) {
                     this.target.health -= 15;
                     if (this.target.health <= 0) {
-                        io.to('GLOBAL_PUBLIC').emit('botDied', { botId: this.target.id, botName: this.target.name, killerId: this.id, killerName: this.name, x: this.target.x, y: this.target.y });
-                        setTimeout(() => {
-                            this.target.health = 100;
-                            this.target.x = Math.random() * 8000 + 1000;
-                            this.target.y = Math.random() * 500 + 200;
-                        }, 3000);
+                        io.to('GLOBAL_PUBLIC').emit('botDied', {
+                            botId: this.target.id, botName: this.target.name,
+                            killerId: this.id, killerName: this.name,
+                            x: this.target.x, y: this.target.y
+                        });
+                        const deadBot = this.target;
+                        setTimeout(() => { deadBot.respawn(); }, 3000);
                     }
                 }
             }
@@ -130,18 +180,16 @@ const botNames = ["Alpha_Unit", "Ghost_Z", "Rogue_01", "Shadow_Byte", "Viper", "
 const botColors = ["#ff4757", "#2ecc71", "#3498db", "#f1c40f", "#a29bfe", "#fd79a8"];
 let globalNPCs = [];
 for (let i = 0; i < 6; i++) {
-    globalNPCs.push(new ServerNPC("npc_"+i, botNames[i], botColors[i % botColors.length]));
+    globalNPCs.push(new ServerNPC("npc_" + i, botNames[i], botColors[i % botColors.length]));
 }
 
-// ── SERVER GAME LOOP (30 FPS) ──
+// NPC game loop (30fps)
 setInterval(() => {
     let publicPlayers = {};
     for (let id in players) { if (players[id].room === 'GLOBAL_PUBLIC') publicPlayers[id] = players[id]; }
-    
     let safeSyncPayload = [];
     globalNPCs.forEach(npc => {
         npc.update(33, publicPlayers);
-        // This safely strips out circular references so the JSON doesn't crash!
         if (npc.health > 0) {
             safeSyncPayload.push({
                 id: npc.id, name: npc.name, color: npc.color,
@@ -149,142 +197,442 @@ setInterval(() => {
             });
         }
     });
-    
     io.to('GLOBAL_PUBLIC').emit('npcSync', safeSyncPayload);
 }, 33);
-// ───────────────────────────────
 
+// ── GAME STATE ──
 let players = {};
-let leaderboards = {}; 
+let roomData = {}; // private room metadata
 
-function cleanupRoom(roomName) {
-    let hasPlayers = false;
-    for (let id in players) { if (players[id].room === roomName) { hasPlayers = true; break; } }
-    if (!hasPlayers) delete leaderboards[roomName];
+// ── ROOM HELPERS ──
+function initRoomData(roomName, hostId, config) {
+    roomData[roomName] = {
+        host: hostId,
+        password: config.password || '',
+        state: 'waiting', // 'waiting' | 'playing' | 'ended'
+        mode: config.mode || 'kills',       // 'kills' | 'time'
+        killGoal: config.killGoal || 10,
+        duration: config.duration || 180,   // seconds
+        teamsEnabled: config.teamsEnabled || false,
+        teams: { red: [], blue: [] },
+        readyPlayers: new Set(),
+        timeLeft: 0,
+        killCounts: {},     // socketId -> kill count this match
+        timerInterval: null,
+        leaderboard: []     // [{ name, kills, team }]
+    };
 }
 
+function cleanupRoom(roomName) {
+    if (roomName === 'GLOBAL_PUBLIC') return;
+    let hasPlayers = false;
+    for (let id in players) { if (players[id].room === roomName) { hasPlayers = true; break; } }
+    if (!hasPlayers) {
+        const rd = roomData[roomName];
+        if (rd && rd.timerInterval) clearInterval(rd.timerInterval);
+        delete roomData[roomName];
+    }
+}
+
+function getPlayersInRoom(roomName) {
+    let result = {};
+    for (let id in players) { if (players[id].room === roomName) result[id] = players[id]; }
+    return result;
+}
+
+function buildLobbyState(roomName) {
+    const rd = roomData[roomName];
+    if (!rd) return null;
+    const roomPlayers = getPlayersInRoom(roomName);
+    return {
+        host: rd.host,
+        state: rd.state,
+        mode: rd.mode,
+        killGoal: rd.killGoal,
+        duration: rd.duration,
+        teamsEnabled: rd.teamsEnabled,
+        teams: rd.teams,
+        readyPlayers: [...rd.readyPlayers],
+        players: Object.fromEntries(
+            Object.entries(roomPlayers).map(([id, p]) => [id, { name: p.name, color: p.color, team: p.team }])
+        ),
+        timeLeft: rd.timeLeft,
+        leaderboard: rd.leaderboard
+    };
+}
+
+function buildRoomLeaderboard(roomName) {
+    const rd = roomData[roomName]; if (!rd) return [];
+    const list = [];
+    for (let id in players) {
+        if (players[id].room !== roomName) continue;
+        list.push({
+            id, name: players[id].name, color: players[id].color,
+            team: players[id].team, kills: rd.killCounts[id] || 0
+        });
+    }
+    list.sort((a, b) => b.kills - a.kills);
+    return list;
+}
+
+function checkWinCondition(roomName) {
+    const rd = roomData[roomName];
+    if (!rd || rd.state !== 'playing') return;
+
+    if (rd.mode === 'kills') {
+        if (rd.teamsEnabled) {
+            let redKills = 0, blueKills = 0;
+            for (let id in players) {
+                if (players[id].room !== roomName) continue;
+                const k = rd.killCounts[id] || 0;
+                if (players[id].team === 'red') redKills += k;
+                else blueKills += k;
+            }
+            if (redKills >= rd.killGoal || blueKills >= rd.killGoal) {
+                endMatch(roomName, redKills >= rd.killGoal ? 'red' : 'blue');
+            }
+        } else {
+            for (let id in rd.killCounts) {
+                if (rd.killCounts[id] >= rd.killGoal) {
+                    endMatch(roomName, null, id);
+                    break;
+                }
+            }
+        }
+    }
+}
+
+function endMatch(roomName, winTeam, winnerId) {
+    const rd = roomData[roomName];
+    if (!rd || rd.state === 'ended') return;
+    rd.state = 'ended';
+    if (rd.timerInterval) { clearInterval(rd.timerInterval); rd.timerInterval = null; }
+
+    const finalScores = buildRoomLeaderboard(roomName);
+    const winner = winnerId ? players[winnerId] : null;
+
+    io.to(roomName).emit('matchEnd', {
+        winTeam: winTeam || null,
+        winnerId: winnerId || null,
+        winnerName: winner ? winner.name : null,
+        finalScores,
+        mode: rd.mode
+    });
+}
+
+function startMatch(roomName) {
+    const rd = roomData[roomName];
+    if (!rd || rd.state !== 'waiting') return false;
+    rd.state = 'playing';
+    // Reset kill counts for all current players
+    rd.killCounts = {};
+    rd.leaderboard = [];
+    for (let id in players) {
+        if (players[id].room !== roomName) continue;
+        rd.killCounts[id] = 0;
+        rd.leaderboard.push({ name: players[id].name, color: players[id].color, team: players[id].team, kills: 0 });
+    }
+
+    if (rd.mode === 'time') {
+        rd.timeLeft = rd.duration;
+        rd.timerInterval = setInterval(() => {
+            rd.timeLeft = Math.max(0, rd.timeLeft - 1);
+            io.to(roomName).emit('matchTimerUpdate', { timeLeft: rd.timeLeft });
+            if (rd.timeLeft <= 0) {
+                // Time up — find winner
+                const scores = buildRoomLeaderboard(roomName);
+                if (rd.teamsEnabled) {
+                    let redKills = 0, blueKills = 0;
+                    scores.forEach(s => { if (s.team === 'red') redKills += s.kills; else blueKills += s.kills; });
+                    endMatch(roomName, redKills >= blueKills ? 'red' : 'blue');
+                } else {
+                    const top = scores[0];
+                    const topId = Object.keys(players).find(id => players[id].room === roomName && players[id].name === top?.name);
+                    endMatch(roomName, null, topId);
+                }
+            }
+        }, 1000);
+    }
+
+    io.to(roomName).emit('matchStart', buildLobbyState(roomName));
+    return true;
+}
+
+// ── SOCKET HANDLERS ──
 io.on('connection', (socket) => {
-    
+
+    // LOGIN
     socket.on('login', async (data, callback) => {
         const { name, pin } = data;
         if (!name || !pin) return callback({ success: false, message: "Callsign and PIN required." });
         const callsignLower = name.toLowerCase();
-
         try {
             if (!usersCollection) return callback({ success: false, message: "Database booting up..." });
-            const user = await usersCollection.findOne({ callsignLower: callsignLower });
-
+            const user = await usersCollection.findOne({ callsignLower });
             if (user) {
-                if (user.pin === pin) { socket.playerName = user.callsign; callback({ success: true }); } 
+                if (user.pin === pin) { socket.playerName = user.callsign; callback({ success: true }); }
                 else { callback({ success: false, message: "ACCESS DENIED: Incorrect PIN." }); }
             } else {
-                await usersCollection.insertOne({ callsign: name, callsignLower: callsignLower, pin: pin });
+                await usersCollection.insertOne({ callsign: name, callsignLower, pin });
                 socket.playerName = name; callback({ success: true });
             }
         } catch (err) { callback({ success: false, message: "Database error." }); }
     });
 
+    // PUBLIC MATCH (join GLOBAL_PUBLIC)
     socket.on('joinGame', (data, callback) => {
-        let roomName = data.room || "GLOBAL_PUBLIC"; 
-        let nameTaken = false; let existingId = null;
-
-        for (let id in players) {
-            if (id !== socket.id && players[id].room === roomName && players[id].name.toLowerCase() === socket.playerName.toLowerCase()) {
-                nameTaken = true; existingId = id;
-            }
-        }
-
-        if (nameTaken) {
-            io.to(existingId).emit('kicked', { reason: "Logged in from another location in this room." });
-            io.sockets.sockets.get(existingId)?.leave(roomName);
-            delete players[existingId];
-            socket.broadcast.to(roomName).emit('playerDisconnected', existingId);
-            cleanupRoom(roomName);
-        }
-
-        if (players[socket.id]) {
-            let oldRoom = players[socket.id].room;
-            socket.leave(oldRoom);
-            socket.broadcast.to(oldRoom).emit('playerDisconnected', socket.id);
-            delete players[socket.id];
-            cleanupRoom(oldRoom);
-        }
-
+        const roomName = 'GLOBAL_PUBLIC';
+        _handleNameConflict(socket, roomName);
+        _leaveCurrentRoom(socket);
         socket.join(roomName);
-
         players[socket.id] = {
             id: socket.id, room: roomName, name: socket.playerName,
             x: Math.random() * 8000 + 1000, y: Math.random() * 500 + 200,
-            aimAngle: 0, color: data.color || "#e74c3c", health: 100, weapon: 'rifle'
+            aimAngle: 0, color: data.color || "#e74c3c", health: 100, weapon: 'rifle', team: null
         };
-
-        if (!leaderboards[roomName]) leaderboards[roomName] = [];
-
-        let foundLB = leaderboards[roomName].find(lb => lb.name === socket.playerName);
-        if (!foundLB) leaderboards[roomName].push({ name: socket.playerName, bestStreak: 0, totalKills: 0 });
-
-        let playersInRoom = {};
-        for (let id in players) { if (players[id].room === roomName) playersInRoom[id] = players[id]; }
-
+        const playersInRoom = getPlayersInRoom(roomName);
         socket.broadcast.to(roomName).emit('newPlayer', { id: socket.id, player: players[socket.id] });
         callback({ success: true, currentPlayers: playersInRoom });
-        io.to(roomName).emit('leaderboardUpdate', leaderboards[roomName]);
     });
 
+    // CREATE PRIVATE ROOM
+    socket.on('createRoom', (data, callback) => {
+        if (!socket.playerName) return callback({ success: false, message: "Not authenticated." });
+        const roomCode = Math.random().toString(36).substring(2, 7).toUpperCase();
+        initRoomData(roomCode, socket.id, {
+            password: data.password || '',
+            mode: data.mode || 'kills',
+            killGoal: parseInt(data.killGoal) || 10,
+            duration: parseInt(data.duration) || 180,
+            teamsEnabled: data.teamsEnabled || false
+        });
+        _doJoinRoom(socket, roomCode, data.color, callback);
+    });
+
+    // JOIN PRIVATE ROOM
+    socket.on('joinRoomRequest', (data, callback) => {
+        if (!socket.playerName) return callback({ success: false, message: "Not authenticated." });
+        const roomCode = (data.room || '').trim().toUpperCase();
+        const rd = roomData[roomCode];
+        if (!rd) return callback({ success: false, message: "Room not found. Check the code." });
+        if (rd.password && rd.password !== (data.password || '')) return callback({ success: false, message: "Wrong room password." });
+        if (rd.state === 'playing') return callback({ success: false, message: "Match already in progress." });
+        if (rd.state === 'ended') return callback({ success: false, message: "Match has ended." });
+        _doJoinRoom(socket, roomCode, data.color, callback);
+    });
+
+    // RESPAWN IN ROOM (called from death screen while match is live)
+    socket.on('respawnInRoom', (data, callback) => {
+        const roomCode = data.room;
+        const rd = roomData[roomCode];
+        if (!rd || rd.state !== 'playing') return callback && callback({ success: false });
+        _leaveCurrentRoom(socket);
+        socket.join(roomCode);
+        players[socket.id] = {
+            id: socket.id, room: roomCode, name: socket.playerName,
+            x: Math.random() * 8000 + 1000, y: Math.random() * 500 + 200,
+            aimAngle: 0, color: data.color || "#e74c3c", health: 100, weapon: 'rifle',
+            team: data.team || null
+        };
+        const playersInRoom = getPlayersInRoom(roomCode);
+        socket.broadcast.to(roomCode).emit('newPlayer', { id: socket.id, player: players[socket.id] });
+        if (callback) callback({ success: true, currentPlayers: playersInRoom });
+    });
+
+    function _doJoinRoom(socket, roomCode, color, callback) {
+        _handleNameConflict(socket, roomCode);
+        _leaveCurrentRoom(socket);
+        socket.join(roomCode);
+
+        const rd = roomData[roomCode];
+        let team = null;
+        if (rd && rd.teamsEnabled) {
+            const redCount = rd.teams.red.length;
+            const blueCount = rd.teams.blue.length;
+            team = redCount <= blueCount ? 'red' : 'blue';
+            if (team === 'red') rd.teams.red.push(socket.id);
+            else rd.teams.blue.push(socket.id);
+        }
+
+        players[socket.id] = {
+            id: socket.id, room: roomCode, name: socket.playerName,
+            x: Math.random() * 8000 + 1000, y: Math.random() * 500 + 200,
+            aimAngle: 0, color: color || "#e74c3c", health: 100, weapon: 'rifle', team
+        };
+
+        if (rd) {
+            rd.killCounts[socket.id] = 0;
+            if (!rd.leaderboard.find(l => l.name === socket.playerName)) {
+                rd.leaderboard.push({ name: socket.playerName, color: color || "#e74c3c", team, kills: 0 });
+            }
+        }
+
+        const playersInRoom = getPlayersInRoom(roomCode);
+        socket.broadcast.to(roomCode).emit('newPlayer', { id: socket.id, player: players[socket.id] });
+        io.to(roomCode).emit('lobbyUpdate', buildLobbyState(roomCode));
+
+        callback({
+            success: true,
+            currentPlayers: playersInRoom,
+            roomCode,
+            isHost: rd ? rd.host === socket.id : false,
+            lobbyState: rd ? buildLobbyState(roomCode) : null
+        });
+    }
+
+    function _handleNameConflict(socket, roomName) {
+        for (let id in players) {
+            if (id === socket.id) continue;
+            if (players[id].room === roomName && players[id].name?.toLowerCase() === socket.playerName?.toLowerCase()) {
+                io.to(id).emit('kicked', { reason: "Your callsign was logged in from another device." });
+                io.sockets.sockets.get(id)?.leave(roomName);
+                const rd = roomData[roomName];
+                if (rd) {
+                    rd.teams.red = rd.teams.red.filter(x => x !== id);
+                    rd.teams.blue = rd.teams.blue.filter(x => x !== id);
+                    rd.readyPlayers.delete(id);
+                }
+                delete players[id];
+                socket.broadcast.to(roomName).emit('playerDisconnected', id);
+            }
+        }
+    }
+
+    function _leaveCurrentRoom(socket) {
+        if (!players[socket.id]) return;
+        const oldRoom = players[socket.id].room;
+        socket.leave(oldRoom);
+        socket.broadcast.to(oldRoom).emit('playerDisconnected', socket.id);
+        const rd = roomData[oldRoom];
+        if (rd) {
+            rd.teams.red = rd.teams.red.filter(x => x !== socket.id);
+            rd.teams.blue = rd.teams.blue.filter(x => x !== socket.id);
+            rd.readyPlayers.delete(socket.id);
+        }
+        delete players[socket.id];
+        cleanupRoom(oldRoom);
+    }
+
+    // PLAYER MOVEMENT
     socket.on('playerMovement', (data) => {
         let p = players[socket.id]; if (!p) return;
-        p.x = data.x; p.y = data.y; p.aimAngle = data.aimAngle; p.color = data.color; p.health = data.health; p.weapon = data.weapon;
+        p.x = data.x; p.y = data.y; p.aimAngle = data.aimAngle;
+        p.color = data.color; p.health = data.health; p.weapon = data.weapon;
         socket.broadcast.to(p.room).emit('playerMoved', { id: socket.id, player: p });
     });
 
+    // SHOOT
     socket.on('shoot', (data) => {
         let p = players[socket.id]; if (!p) return;
         socket.broadcast.to(p.room).emit('networkBullet', {
-            x: data.x, y: data.y, vx: data.vx, vy: data.vy, radius: data.radius, ownerId: data.ownerId
+            x: data.x, y: data.y, vx: data.vx, vy: data.vy,
+            radius: data.radius, ownerId: data.ownerId
         });
     });
 
+    // BOT DAMAGE (public only)
     socket.on('damageBot', (data) => {
         let p = players[socket.id];
         if (!p || p.room !== 'GLOBAL_PUBLIC') return;
-
         let bot = globalNPCs.find(b => b.id === data.botId);
         if (bot && bot.health > 0) {
             bot.health -= data.damage;
             if (bot.health <= 0) {
-                io.to('GLOBAL_PUBLIC').emit('botDied', { botId: bot.id, botName: bot.name, killerId: socket.id, killerName: p.name, x: bot.x, y: bot.y });
-                
-                setTimeout(() => {
-                    bot.health = 100;
-                    bot.x = Math.random() * 8000 + 1000;
-                    bot.y = Math.random() * 500 + 200;
-                }, 3000);
+                io.to('GLOBAL_PUBLIC').emit('botDied', {
+                    botId: bot.id, botName: bot.name,
+                    killerId: socket.id, killerName: p.name,
+                    x: bot.x, y: bot.y
+                });
+                setTimeout(() => { bot.respawn(); }, 3000);
             }
         }
     });
 
+    // UPDATE SCORE (public leaderboard, legacy)
     socket.on('updateScore', (data) => {
-        let p = players[socket.id]; if (!p) return;
-        let roomLB = leaderboards[p.room]; if (!roomLB) return; 
-        
-        let found = roomLB.find(lb => lb.name === data.name);
-        if (found) {
-            if (data.kills > found.bestStreak) found.bestStreak = data.kills;
-            found.totalKills += data.kills;
-        } 
-        roomLB.sort((a, b) => b.totalKills - a.totalKills);
-        io.to(p.room).emit('leaderboardUpdate', roomLB);
+        // no-op for now; room kills use reportKill
     });
 
+    // ── ROOM MATCH EVENTS ──
+
+    // Toggle ready status
+    socket.on('setReady', (isReady) => {
+        const p = players[socket.id]; if (!p) return;
+        const rd = roomData[p.room]; if (!rd) return;
+        if (isReady) rd.readyPlayers.add(socket.id);
+        else rd.readyPlayers.delete(socket.id);
+        io.to(p.room).emit('lobbyUpdate', buildLobbyState(p.room));
+    });
+
+    // Host starts match
+    socket.on('startMatch', (callback) => {
+        const p = players[socket.id]; if (!p) return;
+        const rd = roomData[p.room];
+        if (!rd) return callback && callback({ success: false, message: "No room data." });
+        if (rd.host !== socket.id) return callback && callback({ success: false, message: "Only the host can start." });
+
+        const roomPlayerIds = Object.keys(getPlayersInRoom(p.room));
+        const nonHostIds = roomPlayerIds.filter(id => id !== socket.id);
+        const allReady = nonHostIds.every(id => rd.readyPlayers.has(id));
+        if (!allReady) return callback && callback({ success: false, message: "Waiting for all players to ready up." });
+
+        const ok = startMatch(p.room);
+        if (callback) callback({ success: ok, message: ok ? undefined : "Could not start match." });
+    });
+
+    // Kick a player (host only)
+    socket.on('kickPlayer', (targetId) => {
+        const p = players[socket.id]; if (!p) return;
+        const rd = roomData[p.room];
+        if (!rd || rd.host !== socket.id) return;
+        if (!players[targetId] || players[targetId].room !== p.room) return;
+        io.to(targetId).emit('kicked', { reason: "You were removed from the room by the host." });
+        const targetSock = io.sockets.sockets.get(targetId);
+        if (targetSock) targetSock.leave(p.room);
+        rd.teams.red = rd.teams.red.filter(x => x !== targetId);
+        rd.teams.blue = rd.teams.blue.filter(x => x !== targetId);
+        rd.readyPlayers.delete(targetId);
+        delete players[targetId];
+        socket.broadcast.to(p.room).emit('playerDisconnected', targetId);
+        io.to(p.room).emit('lobbyUpdate', buildLobbyState(p.room));
+    });
+
+    // Report a kill in a room match
+    socket.on('reportKill', (data) => {
+        const p = players[socket.id]; if (!p) return;
+        const rd = roomData[p.room]; if (!rd || rd.state !== 'playing') return;
+        rd.killCounts[socket.id] = (rd.killCounts[socket.id] || 0) + 1;
+        // Update leaderboard entry
+        const lb = rd.leaderboard.find(l => l.name === p.name);
+        if (lb) lb.kills = rd.killCounts[socket.id];
+        rd.leaderboard.sort((a, b) => b.kills - a.kills);
+        io.to(p.room).emit('roomLeaderboardUpdate', buildRoomLeaderboard(p.room));
+        checkWinCondition(p.room);
+    });
+
+    // DISCONNECT
     socket.on('disconnect', () => {
-        let p = players[socket.id];
-        if (p) {
-            let oldRoom = p.room;
-            socket.broadcast.to(oldRoom).emit('playerDisconnected', socket.id);
-            delete players[socket.id];
-            cleanupRoom(oldRoom); 
+        const p = players[socket.id]; if (!p) return;
+        const oldRoom = p.room;
+        const rd = roomData[oldRoom];
+        socket.broadcast.to(oldRoom).emit('playerDisconnected', socket.id);
+        if (rd) {
+            rd.teams.red = rd.teams.red.filter(x => x !== socket.id);
+            rd.teams.blue = rd.teams.blue.filter(x => x !== socket.id);
+            rd.readyPlayers.delete(socket.id);
+            // Transfer host if needed
+            if (rd.host === socket.id && rd.state === 'waiting') {
+                const remaining = Object.keys(players).filter(id => id !== socket.id && players[id].room === oldRoom);
+                if (remaining.length > 0) {
+                    rd.host = remaining[0];
+                    io.to(oldRoom).emit('hostChanged', { newHostId: rd.host, newHostName: players[remaining[0]]?.name });
+                }
+            }
+            io.to(oldRoom).emit('lobbyUpdate', buildLobbyState(oldRoom));
         }
+        delete players[socket.id];
+        cleanupRoom(oldRoom);
     });
 });
 
-http.listen(PORT, '0.0.0.0', () => { console.log(`Server listening on port ${PORT}`); });
+http.listen(PORT, '0.0.0.0', () => { console.log(`🚀 BaylerBay Ops server on port ${PORT}`); });
