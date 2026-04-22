@@ -112,38 +112,41 @@ class ServerNPC {
         if (this.x <= 30 && this.moveDir < 0) this.moveDir = 1;
         if (this.x >= worldWidth - 70 && this.moveDir > 0) this.moveDir = -1;
 
-        // Movement
+        // STEP 1: Move X, resolve X collisions (revert on wall hit)
+        const prevX = this.x;
         this.x += this.moveDir * 4;
-        this.dy += 0.35; // gravity
+        for (const obj of serverMap) {
+            if (this.x < obj.x + obj.w && this.x + this.width > obj.x &&
+                this.y < obj.y + obj.h && this.y + this.height > obj.y) {
+                this.x = prevX;
+                this.moveDir *= -1;
+                break;
+            }
+        }
 
-        // ── FIX: Proper jump logic ──
-        // Jump toward target if they're higher up, using a real jump impulse
+        // STEP 2: Apply gravity, jump if on ground and target is above
+        this.dy += 0.35;
         if (this.onGround && this.target && this.target.y < this.y - 80) {
             this.dy = -10;
             this.onGround = false;
         }
-        // Safety net: if sinking far below world bottom but not yet emergency-range, push up
-        if (this.y > worldHeight - 100) {
-            this.dy = -8;
-        }
+        if (this.y > worldHeight - 100) this.dy = -8;
 
+        // STEP 3: Move Y, resolve Y collisions separately
         this.y += this.dy;
-
-        // Platform collision
         this.onGround = false;
-        serverMap.forEach(obj => {
+        for (const obj of serverMap) {
             if (this.x < obj.x + obj.w && this.x + this.width > obj.x &&
                 this.y < obj.y + obj.h && this.y + this.height > obj.y) {
-                if (this.dy > 0 && (this.y + this.height - this.dy) <= obj.y + 2) {
+                if (this.dy > 0) {          // falling → land on top of platform
                     this.y = obj.y - this.height;
-                    this.dy = 0;
                     this.onGround = true;
-                } else if (this.dy < 0) {
+                } else if (this.dy < 0) {   // jumping → hit ceiling
                     this.y = obj.y + obj.h;
-                    this.dy = 0;
                 }
+                this.dy = 0;
             }
-        });
+        }
 
         // Combat
         if (this.target && this.health > 0) {
