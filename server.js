@@ -31,20 +31,167 @@ const worldWidth = 10000; const worldHeight = 2500;
 let serverMap = [];
 
 function mulberry32(a) { return function() { var t = a += 0x6D2B79F5; t = Math.imul(t ^ t >>> 15, t | 1); t ^= t + Math.imul(t ^ t >>> 7, t | 61); return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
-function checkOverlap(nx, ny, nw, nh) { const PAD = 40; for (let obj of serverMap) { if (obj.type === 'wall' || obj.type === 'floor') continue; if (nx < obj.x + obj.w + PAD && nx + nw + PAD > obj.x && ny < obj.y + obj.h + PAD && ny + nh + PAD > obj.y) return true; } return false; }
 
 function buildServerMap() {
+    // ── MUST mirror client buildMap() exactly — same seed, same RNG call order ──
+    // If the RNG sequence differs (e.g. skipping covers/powerups), platform
+    // positions diverge and NPCs appear to walk through client-side blocks.
     serverMap = [
-        { x: -50, y: 0, w: 50, h: worldHeight, type: "wall" },
-        { x: worldWidth, y: 0, w: 50, h: worldHeight, type: "wall" },
-        { x: 0, y: -50, w: worldWidth, h: 50, type: "wall" },
-        { x: 0, y: worldHeight - 50, w: worldWidth, h: 50, type: "floor" }
+        { x: -50,       y: 0,              w: 50,        h: worldHeight, type: "wall"  },
+        { x: worldWidth, y: 0,             w: 50,        h: worldHeight, type: "wall"  },
+        { x: 0,          y: -50,           w: worldWidth, h: 50,         type: "wall"  },
+        { x: 0,          y: worldHeight-50, w: worldWidth, h: 50,        type: "floor" }
     ];
-    let rand = mulberry32(12345);
-    let cx = 200; while (cx < worldWidth - 400) { let pw = 130 + rand() * 270, py = worldHeight - 130 - rand() * 520; if (!checkOverlap(cx, py, pw, 28)) { serverMap.push({ x: cx, y: py, w: pw, h: 28, type: "plat" }); } cx += pw + 40 + rand() * 140; }
-    cx = 350; while (cx < worldWidth - 600) { let pw = 110 + rand() * 200, py = worldHeight - 650 - rand() * 380; if (!checkOverlap(cx, py, pw, 24)) { serverMap.push({ x: cx, y: py, w: pw, h: 24, type: "plat" }); } cx += pw + 80 + rand() * 240; }
-    cx = 500; while (cx < worldWidth - 800) { let pw = 90 + rand() * 170, py = worldHeight - 1100 - rand() * 480; if (!checkOverlap(cx, py, pw, 22)) { serverMap.push({ x: cx, y: py, w: pw, h: 22, type: "plat" }); } cx += pw + 120 + rand() * 320; }
-    cx = 700; while (cx < worldWidth - 1000) { let pw = 120 + rand() * 280, py = 120 + rand() * 420; if (!checkOverlap(cx, py, pw, 20)) { serverMap.push({ x: cx, y: py, w: pw, h: 20, type: "plat" }); } cx += pw + 220 + rand() * 500; }
+
+    const rand = mulberry32(12345);
+
+    function checkOvlp(nx, ny, nw, nh) {
+        const PAD = 40;
+        for (const obj of serverMap) {
+            if (obj.type === 'wall' || obj.type === 'floor') continue;
+            if (nx < obj.x+obj.w+PAD && nx+nw+PAD > obj.x && ny < obj.y+obj.h+PAD && ny+nh+PAD > obj.y) return true;
+        }
+        return false;
+    }
+
+    // Consume powerup RNG the same way the client does (so downstream calls stay in sync)
+    function consumePowerup() {
+        if (rand() > 0.45) return;   // same gate as client spawnPowerup
+        rand();                       // type rr draw
+    }
+
+    // ── TIER 0 platforms (ground level) ──
+    let cx = 200;
+    while (cx < worldWidth - 400) {
+        const pw = 130 + rand() * 270, py = worldHeight - 130 - rand() * 520;
+        if (!checkOvlp(cx, py, pw, 28)) {
+            serverMap.push({ x: cx, y: py, w: pw, h: 28, type: "plat" });
+            // cover check — same RNG calls as client
+            if (rand() > 0.45) {
+                const cw = 38 + rand() * 28, ch = 50 + rand() * 40;
+                if (!checkOvlp(cx + pw/2 - cw/2, py - ch, cw, ch)) {
+                    serverMap.push({ x: cx + pw/2 - cw/2, y: py - ch, w: cw, h: ch, type: "cover" });
+                }
+            }
+            consumePowerup(); rand(); // powerup x-pos rand consumed by client
+        }
+        cx += pw + 40 + rand() * 140;
+    }
+
+    // ── TIER 1 platforms (mid level, some moving) ──
+    cx = 350;
+    while (cx < worldWidth - 600) {
+        const pw = 110 + rand() * 200, py = worldHeight - 650 - rand() * 380;
+        if (!checkOvlp(cx, py, pw, 24)) {
+            const isMoving = rand() > 0.68;
+            const plat = { x: cx, y: py, w: pw, h: 24, type: "plat" };
+            if (isMoving) {
+                plat.moving = true;
+                plat.moveBase  = cx;
+                plat.moveRange = 110 + rand() * 220;
+                plat.moveSpeed = 0.00045 + rand() * 0.00065;
+                plat.movePhase = rand() * Math.PI * 2;
+            }
+            serverMap.push(plat);
+            // cover
+            if (rand() > 0.5) {
+                const cw = 32 + rand() * 24, ch = 28 + rand() * 28;
+                if (!checkOvlp(cx + pw/2 - cw/2, py - ch, cw, ch)) {
+                    serverMap.push({ x: cx + pw/2 - cw/2, y: py - ch, w: cw, h: ch, type: "cover" });
+                }
+            }
+            consumePowerup(); rand();
+        }
+        cx += pw + 80 + rand() * 240;
+    }
+
+    // ── TIER 2 platforms (upper, some moving + Y-move) ──
+    cx = 500;
+    while (cx < worldWidth - 800) {
+        const pw = 90 + rand() * 170, py = worldHeight - 1100 - rand() * 480;
+        if (!checkOvlp(cx, py, pw, 22)) {
+            const isMoving = rand() > 0.45;
+            const plat = { x: cx, y: py, w: pw, h: 22, type: "plat" };
+            if (isMoving) {
+                plat.moving    = true;
+                plat.moveBase  = cx;
+                plat.moveRange = 90 + rand() * 200;
+                plat.moveSpeed = 0.0006 + rand() * 0.001;
+                plat.movePhase = rand() * Math.PI * 2;
+                plat.moveY     = rand() > 0.55;
+                if (plat.moveY) {
+                    plat.moveBaseY   = py;
+                    plat.moveRangeY  = 60 + rand() * 100;
+                    plat.moveSpeedY  = 0.0004 + rand() * 0.0006;
+                    plat.movePhaseY  = rand() * Math.PI * 2;
+                }
+            }
+            serverMap.push(plat);
+            consumePowerup(); rand();
+        }
+        cx += pw + 120 + rand() * 320;
+    }
+
+    // ── TIER 3 platforms (sky level) ──
+    cx = 700;
+    while (cx < worldWidth - 1000) {
+        const pw = 120 + rand() * 280, py = 120 + rand() * 420;
+        if (!checkOvlp(cx, py, pw, 20)) {
+            const isMoving = rand() > 0.6;
+            const plat = { x: cx, y: py, w: pw, h: 20, type: "plat" };
+            if (isMoving) {
+                plat.moving    = true;
+                plat.moveBase  = cx;
+                plat.moveRange = 80 + rand() * 180;
+                plat.moveSpeed = 0.0003 + rand() * 0.0005;
+                plat.movePhase = rand() * Math.PI * 2;
+            }
+            serverMap.push(plat);
+            // cover — client calls rand() twice for position even inside checkOverlap
+            if (rand() > 0.5) {
+                const cw = 30 + rand() * 25, ch = 20 + rand() * 24;
+                const coverX = cx + pw * rand() - 15;
+                if (!checkOvlp(coverX, py - ch, cw, ch)) {
+                    serverMap.push({ x: coverX, y: py - ch, w: cw, h: ch, type: "cover" });
+                }
+            }
+            consumePowerup(); rand();
+        }
+        cx += pw + 220 + rand() * 500;
+    }
+
+    // ── Tower structures ──
+    let tx = 600;
+    while (tx < worldWidth - 500) {
+        const tH = 200 + rand() * 600, tY = worldHeight - 700 - rand() * 600, tW = 20 + rand() * 15;
+        if (!checkOvlp(tx, tY, tW, tH)) {
+            serverMap.push({ x: tx, y: tY, w: tW, h: tH, type: "cover" });
+            for (let gy = tY + 40; gy < tY + tH - 40; gy += 100 + rand() * 80) {
+                const bx = tx - 80 - rand() * 40, bw = 70 + rand() * 30;
+                if (!checkOvlp(bx, gy, bw, 16)) {
+                    serverMap.push({ x: bx, y: gy, w: bw, h: 16, type: "plat" });
+                }
+            }
+        }
+        tx += 500 + rand() * 900;
+    }
+
+    // ── Cluster platforms ──
+    let fx = 1000;
+    while (fx < worldWidth - 1200) {
+        const baseY = 400 + rand() * 800;
+        let clusterX = fx;
+        const count = 3 + Math.floor(rand() * 3);
+        for (let ci = 0; ci < count; ci++) {
+            const pw = 80 + rand() * 120, py = baseY + (rand() - 0.5) * 200;
+            if (!checkOvlp(clusterX, py, pw, 20)) {
+                serverMap.push({ x: clusterX, y: py, w: pw, h: 20, type: "plat" });
+                consumePowerup(); rand();
+            }
+            clusterX += pw + 30 + rand() * 60;
+        }
+        fx += 1200 + rand() * 1500;
+    }
 }
 buildServerMap();
 
