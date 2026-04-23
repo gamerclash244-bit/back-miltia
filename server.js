@@ -26,27 +26,6 @@ async function connectDB() {
 }
 connectDB();
 
-// ── DATABASE LEADERBOARD HELPER ──
-async function getTopPlayers() {
-    if (!usersCollection) return [];
-    try {
-        
-        const topUsers = await usersCollection.find()
-            .sort({ totalKills: -1 })
-            .limit(10)
-            .toArray();
-            
-        return topUsers.map(u => ({
-            name: u.callsign,
-            totalKills: u.totalKills || 0,
-            bestStreak: u.bestStreak || 0
-        }));
-    } catch (err) {
-        console.error("Leaderboard fetch error:", err);
-        return [];
-    }
-}
-
 // ── SERVER-SIDE MAP ──
 const worldWidth = 10000; const worldHeight = 2500;
 let serverMap = [];
@@ -253,7 +232,6 @@ class ServerNPC {
         if (this.x >= worldWidth - 50) { this.x = worldWidth - 50; this.moveDir = -1; }
 
         // Targeting
-    
         let closest = null; let minDist = 1200;
         for (let id in publicPlayers) {
             let p = publicPlayers[id]; if (p.health <= 0) continue;
@@ -375,6 +353,7 @@ setInterval(() => {
 // ── GAME STATE ──
 let players = {};
 let roomData = {}; // private room metadata
+let publicScores = {}; // Tracks public leaderboard
 // ── ROOM HELPERS ──
 function initRoomData(roomName, hostId, config) {
     roomData[roomName] = {
@@ -544,39 +523,14 @@ io.on('connection', (socket) => {
                 if (user.pin === pin) { socket.playerName = user.callsign; callback({ success: true }); }
                 else { callback({ success: false, message: "ACCESS DENIED: Incorrect PIN." }); }
             } else {
-                // Initialize new operators with 0 kills and 0 best streak
-                await usersCollection.insertOne({ callsign: name, callsignLower, pin, totalKills: 0, bestStreak: 0 });
+                await usersCollection.insertOne({ callsign: name, callsignLower, pin });
                 socket.playerName = name; callback({ success: true });
             }
         } catch (err) { callback({ success: false, message: "Database error." }); }
     });
 
-    // UPDATE SCORE (Persistent MongoDB Leaderboard)
-    socket.on('updateScore', async (data) => {
-        if (!data.name || !usersCollection) return;
-        
-        try {
-            // Increment total kills by 1, and update best streak if current match kills are higher
-            await usersCollection.updateOne(
-                { callsignLower: data.name.toLowerCase() },
-                { 
-                    $inc: { totalKills: 1 },
-                    $max: { bestStreak: data.kills }
-                }
-            );
-
-            // Fetch the newly updated top 10 from the database
-            const topPlayers = await getTopPlayers();
-
-            // Broadcast it to everyone in the lobby
-            io.to('GLOBAL_PUBLIC').emit('leaderboardUpdate', topPlayers);
-        } catch (err) {
-            console.error("Failed to update score in DB:", err);
-        }
-    });
-
     // PUBLIC MATCH (join GLOBAL_PUBLIC)
-    socket.on('joinGame', async (data, callback) => {
+    socket.on('joinGame', (data, callback) => {
         const roomName = 'GLOBAL_PUBLIC';
         _handleNameConflict(socket, roomName);
         _leaveCurrentRoom(socket);
@@ -589,14 +543,12 @@ io.on('connection', (socket) => {
         const playersInRoom = getPlayersInRoom(roomName);
         socket.broadcast.to(roomName).emit('newPlayer', { id: socket.id, player: players[socket.id] });
         
-        // Fetch current leaderboard from MongoDB and send it to the joining player
-        const topPlayers = await getTopPlayers();
+        // Send current leaderboard to the new player immediately
+        const topPlayers = Object.values(publicScores).sort((a, b) => b.totalKills - a.totalKills).slice(0, 10);
         socket.emit('leaderboardUpdate', topPlayers);
         
         callback({ success: true, currentPlayers: playersInRoom });
     });
-
-    // ── ROOM MATCH EVENTS ──
 
     // CREATE PRIVATE ROOM
     socket.on('createRoom', (data, callback) => {
@@ -751,29 +703,10 @@ io.on('connection', (socket) => {
         }
     });
 
-  // UPDATE SCORE (Persistent MongoDB Leaderboard)
-    socket.on('updateScore', async (data) => {
-        if (!data.name || !usersCollection) return;
-        
-        try {
-            // Increment total kills by 1, and update best streak if current match kills are higher
-            await usersCollection.updateOne(
-                { callsignLower: data.name.toLowerCase() },
-                { 
-                    $inc: { totalKills: 1 },
-                    $max: { bestStreak: data.kills }
-                }
-            );
-
-            // Fetch the newly updated top 10 from the database
-            const topPlayers = await getTopPlayers();
-
-            // Broadcast it to everyone in the lobby
-            io.to('GLOBAL_PUBLIC').emit('leaderboardUpdate', topPlayers);
-        } catch (err) {
-            console.error("Failed to update score in DB:", err);
-        }
-    });
+    // UPDATE SCORE (public leaderboard, legacy)
+// UPDATE SCORE (public leaderboard)
+    socket.on('updateScore', (data) => {
+        if (!data.name) return;
         
         // Initialize player in the scores object if they don't exist
         if (!publicScores[data.name]) {
@@ -793,7 +726,6 @@ io.on('connection', (socket) => {
 
         // Broadcast the updated leaderboard to everyone in the public lobby
         io.to('GLOBAL_PUBLIC').emit('leaderboardUpdate', topPlayers);
-    });
     });
 
     // ── ROOM MATCH EVENTS ──
