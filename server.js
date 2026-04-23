@@ -575,14 +575,28 @@ io.on('connection', (socket) => {
         }
     });
 
-    // ── ROOM MATCH EVENTS ──
+    // PUBLIC MATCH (join GLOBAL_PUBLIC)
+    socket.on('joinGame', async (data, callback) => {
+        const roomName = 'GLOBAL_PUBLIC';
+        _handleNameConflict(socket, roomName);
+        _leaveCurrentRoom(socket);
+        socket.join(roomName);
+        players[socket.id] = {
+            id: socket.id, room: roomName, name: socket.playerName,
+            x: Math.random() * 8000 + 1000, y: Math.random() * 500 + 200,
+            aimAngle: 0, color: data.color || "#e74c3c", health: 100, weapon: 'rifle', team: null
+        };
+        const playersInRoom = getPlayersInRoom(roomName);
+        socket.broadcast.to(roomName).emit('newPlayer', { id: socket.id, player: players[socket.id] });
         
-        // Send current leaderboard to the new player immediately
-        const topPlayers = Object.values(publicScores).sort((a, b) => b.totalKills - a.totalKills).slice(0, 10);
+        // Fetch current leaderboard from MongoDB and send it to the joining player
+        const topPlayers = await getTopPlayers();
         socket.emit('leaderboardUpdate', topPlayers);
         
         callback({ success: true, currentPlayers: playersInRoom });
     });
+
+    // ── ROOM MATCH EVENTS ──
 
     // CREATE PRIVATE ROOM
     socket.on('createRoom', (data, callback) => {
