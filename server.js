@@ -551,26 +551,31 @@ io.on('connection', (socket) => {
         } catch (err) { callback({ success: false, message: "Database error." }); }
     });
 
-    // PUBLIC MATCH (join GLOBAL_PUBLIC)
-    socket.on('joinGame', async (data, callback) => {
-        const roomName = 'GLOBAL_PUBLIC';
-        _handleNameConflict(socket, roomName);
-        _leaveCurrentRoom(socket);
-        socket.join(roomName);
-        players[socket.id] = {
-            id: socket.id, room: roomName, name: socket.playerName,
-            x: Math.random() * 8000 + 1000, y: Math.random() * 500 + 200,
-            aimAngle: 0, color: data.color || "#e74c3c", health: 100, weapon: 'rifle', team: null
-        };
-        const playersInRoom = getPlayersInRoom(roomName);
-        socket.broadcast.to(roomName).emit('newPlayer', { id: socket.id, player: players[socket.id] });
+    // UPDATE SCORE (Persistent MongoDB Leaderboard)
+    socket.on('updateScore', async (data) => {
+        if (!data.name || !usersCollection) return;
         
-        // Fetch current leaderboard from MongoDB and send it to the joining player
-        const topPlayers = await getTopPlayers();
-        socket.emit('leaderboardUpdate', topPlayers);
-        
-        callback({ success: true, currentPlayers: playersInRoom });
+        try {
+            // Increment total kills by 1, and update best streak if current match kills are higher
+            await usersCollection.updateOne(
+                { callsignLower: data.name.toLowerCase() },
+                { 
+                    $inc: { totalKills: 1 },
+                    $max: { bestStreak: data.kills }
+                }
+            );
+
+            // Fetch the newly updated top 10 from the database
+            const topPlayers = await getTopPlayers();
+
+            // Broadcast it to everyone in the lobby
+            io.to('GLOBAL_PUBLIC').emit('leaderboardUpdate', topPlayers);
+        } catch (err) {
+            console.error("Failed to update score in DB:", err);
+        }
     });
+
+    // ── ROOM MATCH EVENTS ──
         
         // Send current leaderboard to the new player immediately
         const topPlayers = Object.values(publicScores).sort((a, b) => b.totalKills - a.totalKills).slice(0, 10);
