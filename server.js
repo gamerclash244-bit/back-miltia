@@ -685,6 +685,17 @@ io.on('connection', (socket) => {
         });
     });
 
+    // BOMB EXPLODE — relay to room so others see explosion + take damage
+    socket.on('bombExplode', (data) => {
+        let p = players[socket.id]; if (!p) return;
+        socket.broadcast.to(p.room).emit('networkBombExplode', {
+            x: data.x, y: data.y,
+            radius: data.radius,
+            damage: data.damage,
+            ownerId: data.ownerId
+        });
+    });
+
     // BOT DAMAGE (public only)
     socket.on('damageBot', (data) => {
         let p = players[socket.id];
