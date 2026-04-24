@@ -713,10 +713,26 @@ io.on('connection', (socket) => {
             publicScores[data.name] = { name: data.name, totalKills: 0, bestStreak: 0 };
         }
 
-        // Update their stats
-        publicScores[data.name].totalKills = data.kills;
-        if (data.kills > publicScores[data.name].bestStreak) {
-            publicScores[data.name].bestStreak = data.kills;
+        const prev = socket._lastKills ?? 0;
+        const curr = data.kills ?? 0;
+
+        // Detect new life: kills went backwards = died and respawned with reset counter
+        if (curr < prev) {
+            // Lock in best single-life streak from the life that just ended
+            if (prev > publicScores[data.name].bestStreak) {
+                publicScores[data.name].bestStreak = prev;
+            }
+            socket._lastKills = 0;
+        }
+
+        // Add only the NEW kills since last update (delta), never overwrite total
+        const delta = Math.max(0, curr - (socket._lastKills ?? 0));
+        socket._lastKills = curr;
+        publicScores[data.name].totalKills += delta;
+
+        // Also update bestStreak if current life is already higher
+        if (curr > publicScores[data.name].bestStreak) {
+            publicScores[data.name].bestStreak = curr;
         }
 
         // Sort the top 10 players by total kills
