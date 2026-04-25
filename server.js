@@ -1,5 +1,7 @@
 const express = require('express');
+const cors = require('cors');
 const app = express();
+app.use(cors());
 const http = require('http').createServer(app);
 const io = require('socket.io')(http, {
     cors: { origin: "*", methods: ["GET", "POST"] }
@@ -9,7 +11,11 @@ const { MongoClient } = require('mongodb');
 const PORT = process.env.PORT || 3000;
 
 // ── MONGODB ──
-const uri = process.env.MONGODB_URI || "mongodb+srv://gamerclash244_db_user:YJGhqcHaRmOMoF9P@cluster0.5o0s4pv.mongodb.net/?appName=Cluster0";
+if (!process.env.MONGODB_URI) {
+    console.error("❌ FATAL: MONGODB_URI environment variable is not set. Please add it in your Render dashboard.");
+    process.exit(1);
+}
+const uri = process.env.MONGODB_URI;
 const client = new MongoClient(uri);
 let usersCollection;
 
@@ -507,6 +513,11 @@ function startMatch(roomName) {
     io.to(roomName).emit('matchStart', buildLobbyState(roomName));
     return true;
 }
+
+// ── HEALTH CHECK ──
+app.get('/health', (req, res) => {
+    res.status(200).json({ status: 'ok', timestamp: Date.now() });
+});
 
 // ── SOCKET HANDLERS ──
 io.on('connection', (socket) => {
