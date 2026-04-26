@@ -823,6 +823,25 @@ io.on('connection', (socket) => {
         checkWinCondition(p.room);
     });
 
+    // ── VOICE CHAT SIGNALING (WebRTC relay) ──
+    socket.on('voiceOffer', (data) => {
+        const p = players[socket.id]; if (!p) return;
+        const target = io.sockets.sockets.get(data.to);
+        if (target) target.emit('voiceOffer', { from: socket.id, offer: data.offer });
+    });
+    socket.on('voiceAnswer', (data) => {
+        const target = io.sockets.sockets.get(data.to);
+        if (target) target.emit('voiceAnswer', { from: socket.id, answer: data.answer });
+    });
+    socket.on('voiceIceCandidate', (data) => {
+        const target = io.sockets.sockets.get(data.to);
+        if (target) target.emit('voiceIceCandidate', { from: socket.id, candidate: data.candidate });
+    });
+    socket.on('voiceMuteState', (data) => {
+        const p = players[socket.id]; if (!p) return;
+        socket.broadcast.to(p.room).emit('peerMuteState', { from: socket.id, muted: data.muted });
+    });
+
     // DISCONNECT
     socket.on('disconnect', () => {
         const p = players[socket.id]; if (!p) return;
